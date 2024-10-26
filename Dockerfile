@@ -23,6 +23,11 @@ RUN set -ex && \
         libhidapi-dev \
         libprotobuf-dev \
         protobuf-compiler && \
+        libssl-dev \
+        libunbound-dev \
+        libboost-all-dev \
+        libsodium-dev \
+        libzmq3-dev \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
