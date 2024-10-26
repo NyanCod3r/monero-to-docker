@@ -7,6 +7,7 @@ RUN set -ex && \
     apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get --no-install-recommends --yes install \
         automake \
+        python3 \
         autotools-dev \
         bsdmainutils \
         build-essential \
