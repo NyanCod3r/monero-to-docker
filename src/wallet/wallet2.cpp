@@ -1034,7 +1034,7 @@ gamma_picker::gamma_picker(const std::vector<uint64_t> &rct_offsets, double shap
     rct_offsets(rct_offsets)
 {
   gamma = std::gamma_distribution<double>(shape, scale);
-  THROW_WALLET_EXCEPTION_IF(rct_offsets.size() < std::max(1, CRYPTONOTE_DEFAULT_TX_SPENDABLE_AGE), error::wallet_internal_error, "Bad offset calculation");
+  THROW_WALLET_EXCEPTION_IF(rct_offsets.size() < std::max<size_t>(1, CRYPTONOTE_DEFAULT_TX_SPENDABLE_AGE), error::wallet_internal_error, "Bad offset calculation");
   const size_t blocks_in_a_year = 86400 * 365 / DIFFICULTY_TARGET_V2;
   const size_t blocks_to_consider = std::min<size_t>(rct_offsets.size(), blocks_in_a_year);
   const size_t outputs_to_consider = rct_offsets.back() - (blocks_to_consider < rct_offsets.size() ? rct_offsets[rct_offsets.size() - blocks_to_consider - 1] : 0);
@@ -1881,7 +1881,7 @@ void wallet2::scan_tx(const std::unordered_set<crypto::hash> &txids)
   // TODO: handle this sweep case
   detached_blockchain_data dbd;
   dbd.original_chain_size = m_blockchain.size();
-  if (m_blockchain.size() > txs_to_scan.lowest_height)
+  if (txs_to_scan.highest_height > 0)
   {
     // When connected to an untrusted daemon, if we will need to re-process 1+
     // tx that the user did not request to scan, then we fail out because
@@ -1920,7 +1920,7 @@ void wallet2::scan_tx(const std::unordered_set<crypto::hash> &txids)
   if (skip_to_height > m_blockchain.size())
   {
     m_skip_to_height = skip_to_height;
-    LOG_PRINT_L0("Skipping refresh to height " << skip_to_height);
+    LOG_PRINT_L0("Next refresh will skip to height " << skip_to_height);
 
     // update last block reward here because the refresh loop won't necessarily set it
     try
@@ -1932,9 +1932,7 @@ void wallet2::scan_tx(const std::unordered_set<crypto::hash> &txids)
     }
     catch (...) { MERROR("Failed getting block header at height " << txs_to_scan.highest_height); }
 
-    // TODO: use fast_refresh instead of refresh to update m_blockchain. It needs refactoring to work correctly here.
-    // Or don't refresh at all, and let it update on the next refresh loop.
-    refresh(is_trusted_daemon());
+    // The wallet's blockchain state will now sync from the expected height correctly on next refresh loop
   }
 }
 //----------------------------------------------------------------------------------------------------
@@ -3013,6 +3011,8 @@ void wallet2::get_short_chain_history(std::list<crypto::hash>& ids, uint64_t gra
   size_t sz = blockchain_size - m_blockchain.offset();
   if(!sz)
   {
+    if(m_blockchain.size() > m_blockchain.offset())
+      ids.push_back(m_blockchain[m_blockchain.offset()]);
     ids.push_back(m_blockchain.genesis());
     return;
   }
@@ -4344,7 +4344,7 @@ wallet2::detached_blockchain_data wallet2::detach_blockchain(uint64_t height, st
 
   uint64_t blocks_detached = 0;
   dbd.original_chain_size = m_blockchain.size();
-  if (height >= m_blockchain.offset())
+  if (height <= m_blockchain.size() && height >= m_blockchain.offset())
   {
     for (uint64_t i = height; i < m_blockchain.size(); ++i)
       dbd.detached_blockchain.push_back(m_blockchain[i]);
@@ -5909,7 +5909,7 @@ std::string wallet2::make_multisig(const epee::wipeable_string &password,
   CHECK_AND_ASSERT_THROW_MES(std::find(signers.begin(), signers.end(), multisig_account.get_base_pubkey()) != signers.end(),
     "The local account's signer key was not found in initial multisig kex messages when converting a wallet to multisig.");
 
-  // intialize key exchange
+  // initialize key exchange
   multisig_account.initialize_kex(threshold, signers, expanded_msgs);
   CHECK_AND_ASSERT_THROW_MES(multisig_account.account_is_active(), "Failed to activate multisig account.");
 
@@ -7500,6 +7500,11 @@ crypto::hash wallet2::get_payment_id(const pending_tx &ptx) const
       if (ptx.dests.empty())
       {
         MWARNING("Encrypted payment id found, but no destinations public key, cannot decrypt");
+        return crypto::null_hash;
+      }
+      if (ptx.tx_key == crypto::null_skey)
+      {
+        MWARNING("Encrypted payment id found, but no tx secret key, cannot decrypt");
         return crypto::null_hash;
       }
       if (m_account.get_device().decrypt_payment_id(payment_id8, ptx.dests[0].addr.m_view_public_key, ptx.tx_key))
@@ -9144,7 +9149,7 @@ void wallet2::get_outs(std::vector<std::vector<tools::wallet2::get_outs_entry>> 
     if (has_rct)
     {
       // check we're clear enough of rct start, to avoid corner cases below
-      THROW_WALLET_EXCEPTION_IF(rct_offsets.size() < std::max(1, CRYPTONOTE_DEFAULT_TX_SPENDABLE_AGE),
+      THROW_WALLET_EXCEPTION_IF(rct_offsets.size() < std::max<size_t>(1, CRYPTONOTE_DEFAULT_TX_SPENDABLE_AGE),
           error::get_output_distribution, "Not enough rct outputs");
       THROW_WALLET_EXCEPTION_IF(rct_offsets.back() <= max_rct_index,
           error::get_output_distribution, "Daemon reports suspicious number of rct outputs");
@@ -15177,6 +15182,7 @@ std::vector<std::pair<uint64_t, uint64_t>> wallet2::estimate_backlog(const std::
   {
     THROW_WALLET_EXCEPTION_IF(fee_level.first == 0.0, error::wallet_internal_error, "Invalid 0 fee");
     THROW_WALLET_EXCEPTION_IF(fee_level.second == 0.0, error::wallet_internal_error, "Invalid 0 fee");
+    THROW_WALLET_EXCEPTION_IF(fee_level.second < fee_level.first, error::wallet_internal_error, "Minimum fee cannot be less than maximum fee");
   }
 
   // get txpool backlog
@@ -15196,11 +15202,9 @@ std::vector<std::pair<uint64_t, uint64_t>> wallet2::estimate_backlog(const std::
   THROW_WALLET_EXCEPTION_IF(full_reward_zone == 0, error::wallet_internal_error, "Invalid block weight limit from daemon");
 
   std::vector<std::pair<uint64_t, uint64_t>> blocks;
-  for (const auto &fee_level: fee_levels)
+  for (const auto& [our_fee_byte_min, our_fee_byte_max] : fee_levels)
   {
-    const double our_fee_byte_min = fee_level.first;
-    const double our_fee_byte_max = fee_level.second;
-    uint64_t priority_weight_min = 0, priority_weight_max = 0;
+    uint64_t minfee_weight = 0, maxfee_weight = 0;
     for (const auto &i: res.backlog)
     {
       if (i.weight == 0)
@@ -15210,16 +15214,16 @@ std::vector<std::pair<uint64_t, uint64_t>> wallet2::estimate_backlog(const std::
       }
       double this_fee_byte = i.fee / (double)i.weight;
       if (this_fee_byte >= our_fee_byte_min)
-        priority_weight_min += i.weight;
+        minfee_weight += i.weight;
       if (this_fee_byte >= our_fee_byte_max)
-        priority_weight_max += i.weight;
+        maxfee_weight += i.weight;
     }
 
-    uint64_t nblocks_min = priority_weight_min / full_reward_zone;
-    uint64_t nblocks_max = priority_weight_max / full_reward_zone;
-    MDEBUG("estimate_backlog: priority_weight " << priority_weight_min << " - " << priority_weight_max << " for "
-        << our_fee_byte_min << " - " << our_fee_byte_max << " piconero byte fee, "
-        << nblocks_min << " - " << nblocks_max << " blocks at block weight " << full_reward_zone);
+    uint64_t nblocks_max = minfee_weight / full_reward_zone;
+    uint64_t nblocks_min = maxfee_weight / full_reward_zone;
+    MDEBUG("estimate_backlog: given a block weight of " << full_reward_zone << " you will need to wait "
+      << nblocks_min << " when paying " << our_fee_byte_max << " piconero per byte and " << nblocks_max
+      << " when paying " << our_fee_byte_min << " piconeros per byte.");
     blocks.push_back(std::make_pair(nblocks_min, nblocks_max));
   }
   return blocks;
@@ -15328,22 +15332,6 @@ void wallet2::on_device_progress(const hw::device_progress& event)
     m_callback->on_device_progress(event);
 }
 //----------------------------------------------------------------------------------------------------
-void wallet2::throw_on_rpc_response_error(bool r, const epee::json_rpc::error &error, const std::string &status, const char *method) const
-{
-  // Treat all RPC payment access errors the same, whether payment is actually required or not
-  THROW_WALLET_EXCEPTION_IF(error.code == CORE_RPC_ERROR_CODE_INVALID_CLIENT, tools::error::deprecated_rpc_access, method);
-  THROW_WALLET_EXCEPTION_IF(error.code, tools::error::wallet_coded_rpc_error, method, error.code, get_rpc_server_error_message(error.code));
-  THROW_WALLET_EXCEPTION_IF(!r, tools::error::no_connection_to_daemon, method);
-  // empty string -> not connection
-  THROW_WALLET_EXCEPTION_IF(status.empty(), tools::error::no_connection_to_daemon, method);
-
-  THROW_WALLET_EXCEPTION_IF(status == CORE_RPC_STATUS_BUSY, tools::error::daemon_busy, method);
-  THROW_WALLET_EXCEPTION_IF(status == CORE_RPC_STATUS_PAYMENT_REQUIRED, tools::error::deprecated_rpc_access, method);
-  // Deprecated RPC payment access endpoints would set status to "Client signature does not verify for <method>"
-  THROW_WALLET_EXCEPTION_IF(status.compare(0, 16, "Client signature") == 0, tools::error::deprecated_rpc_access, method);
-}
-//----------------------------------------------------------------------------------------------------
-
 bool wallet2::save_to_file(const std::string& path_to_file, const std::string& raw, bool is_printable) const
 {
   if (is_printable || m_export_format == ExportFormat::Binary)

@@ -84,6 +84,7 @@ namespace rct {
             return bytes[i];
         }
         bool operator==(const key &k) const { return !crypto_verify_32(bytes, k.bytes); }
+        bool operator!=(const key &k) const { return crypto_verify_32(bytes, k.bytes); }
         unsigned char bytes[32];
     };
     typedef std::vector<key> keyV; //vector of keys
@@ -304,7 +305,7 @@ namespace rct {
       RCTTypeCLSAG = 5,
       RCTTypeBulletproofPlus = 6,
     };
-    enum RangeProofType { RangeProofBorromean, RangeProofBulletproof, RangeProofMultiOutputBulletproof, RangeProofPaddedBulletproof };
+    enum RangeProofType { RangeProofBorromean, RangeProofPaddedBulletproof };
     struct RCTConfig {
       RangeProofType range_proof_type;
       int bp_version;

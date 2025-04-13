@@ -37,7 +37,9 @@
 
 #include "cryptonote_basic/cryptonote_format_utils.h"
 #include "cryptonote_core/cryptonote_tx_utils.h"
+#include "net/jsonrpc_structs.h"
 #include "rpc/core_rpc_server_commands_defs.h"
+#include "rpc/core_rpc_server_error_codes.h"
 #include "include_base_utils.h"
 
 
@@ -991,7 +993,7 @@ namespace tools
 #if !defined(_MSC_VER)
 
     template<typename TException, typename... TArgs>
-    void throw_wallet_ex(std::string&& loc, const TArgs&... args)
+    [[noreturn]] void throw_wallet_ex(std::string&& loc, const TArgs&... args)
     {
       TException e(std::move(loc), args...);
       LOG_PRINT_L0(e.to_string());
@@ -1004,7 +1006,7 @@ namespace tools
     #include <boost/preprocessor/repetition/repeat_from_to.hpp>
 
     template<typename TException>
-    void throw_wallet_ex(std::string&& loc)
+    [[noreturn]] void throw_wallet_ex(std::string&& loc)
     {
       TException e(std::move(loc));
       LOG_PRINT_L0(e.to_string());
@@ -1013,7 +1015,7 @@ namespace tools
 
 #define GEN_throw_wallet_ex(z, n, data)                                                       \
     template<typename TException, BOOST_PP_ENUM_PARAMS(n, typename TArg)>                     \
-    void throw_wallet_ex(std::string&& loc, BOOST_PP_ENUM_BINARY_PARAMS(n, const TArg, &arg)) \
+    [[noreturn]] void throw_wallet_ex(std::string&& loc, BOOST_PP_ENUM_BINARY_PARAMS(n, const TArg, &arg)) \
     {                                                                                         \
       TException e(std::move(loc), BOOST_PP_ENUM_PARAMS(n, arg));                             \
       LOG_PRINT_L0(e.to_string());                                                            \
@@ -1040,3 +1042,33 @@ namespace tools
     LOG_ERROR(#cond << ". THROW EXCEPTION: " << #err_type);                                                 \
     tools::error::throw_wallet_ex<err_type>(std::string(__FILE__ ":" STRINGIZE(__LINE__)), ## __VA_ARGS__); \
   }
+
+namespace tools
+{
+  namespace error
+  {
+    inline void throw_on_rpc_response_error(bool r, const epee::json_rpc::error &error, const std::string &status, const char *method)
+    {
+      // Treat all RPC payment access errors the same, whether payment is actually required or not
+      THROW_WALLET_EXCEPTION_IF(error.code == CORE_RPC_ERROR_CODE_INVALID_CLIENT, tools::error::deprecated_rpc_access, method);
+      THROW_WALLET_EXCEPTION_IF(error.code, tools::error::wallet_coded_rpc_error, method, error.code, get_rpc_server_error_message(error.code));
+      THROW_WALLET_EXCEPTION_IF(!r, tools::error::no_connection_to_daemon, method);
+      // empty string -> not connection
+      THROW_WALLET_EXCEPTION_IF(status.empty(), tools::error::no_connection_to_daemon, method);
+
+      THROW_WALLET_EXCEPTION_IF(status == CORE_RPC_STATUS_BUSY, tools::error::daemon_busy, method);
+      THROW_WALLET_EXCEPTION_IF(status == CORE_RPC_STATUS_PAYMENT_REQUIRED, tools::error::deprecated_rpc_access, method);
+      // Deprecated RPC payment access endpoints would set status to "Client signature does not verify for <method>"
+      THROW_WALLET_EXCEPTION_IF(status.compare(0, 16, "Client signature") == 0, tools::error::deprecated_rpc_access, method);
+    }
+  }
+}
+
+#define THROW_ON_RPC_RESPONSE_ERROR(r, err, res, method, ...) \
+  do { \
+    tools::error::throw_on_rpc_response_error(r, err, res.status, method); \
+    THROW_WALLET_EXCEPTION_IF(res.status != CORE_RPC_STATUS_OK, ## __VA_ARGS__); \
+  } while(0)
+
+#define THROW_ON_RPC_RESPONSE_ERROR_GENERIC(r, err, res, method) \
+    THROW_ON_RPC_RESPONSE_ERROR(r, err, res, method, tools::error::wallet_generic_rpc_error, method, res.status)
