@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Tag to build (e.g. v0.18.0.0)'
+        required: true
+        default: 'latest'
 
 jobs:
   build-docker:
@@ -18,19 +24,28 @@ jobs:
 
       - name: Prepare Upstream Code and Restore Dockerfile
         run: |
-          echo "Building tag: ${{ github.ref_name }}"
+          # Determine which tag to build
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            TAG_NAME="${{ inputs.tag_name }}"
+          else
+            TAG_NAME="${{ github.ref_name }}"
+          fi
+          
+          echo "Building tag: $TAG_NAME"
           
           # 1. Preserve our custom files from master
           cp Dockerfile /tmp/Dockerfile.saved
-          # Optionally preserve workflows if needed, though they are already loaded
           
           # 2. Checkout the specific tag (upstream code state)
-          git checkout ${{ github.ref_name }}
+          git checkout "$TAG_NAME"
           
           # 3. Restore the Dockerfile
           cp /tmp/Dockerfile.saved Dockerfile
           
-          echo "Checked out ${{ github.ref_name }} and restored custom Dockerfile"
+          # Export TAG_NAME for next steps
+          echo "TAG_NAME=$TAG_NAME" >> $GITHUB_ENV
+          
+          echo "Checked out $TAG_NAME and restored custom Dockerfile"
           ls -la Dockerfile
 
       - name: Login to Docker Hub
@@ -45,11 +60,11 @@ jobs:
           context: .
           file: ./Dockerfile  # Ensure the correct Dockerfile is used
           push: true
-          tags: nyancod3r/monero_cli:${{ github.ref_name }},nyancod3r/monero_cli:latest,nyancod3r/monero_cli:${{ github.sha }}
+          tags: nyancod3r/monero_cli:${{ env.TAG_NAME }},nyancod3r/monero_cli:latest,nyancod3r/monero_cli:${{ github.sha }}
 
       - name: Extract Hash from Logs
         run: |
-          inspect_output=$(docker inspect "nyancod3r/monero_cli:${{ github.ref_name }}")
+          inspect_output=$(docker inspect "nyancod3r/monero_cli:${{ env.TAG_NAME }}")
           image_sha256=$(echo "$inspect_output" | jq -r '.[0].Id')
           echo "Image SHA256 Hash: $image_sha256" >> image_description.txt
 
