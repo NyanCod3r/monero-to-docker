@@ -32,14 +32,40 @@ jobs:
 
       - name: Merge Upstream Master
         run: |
-          # Merge upstream changes
-          git merge upstream/master --no-edit
+          # Merge upstream changes, favoring local changes for conflicts (keeps our Dockerfile)
+          # Using "|| true" to handle specific conflict scenarios manually
+          git merge upstream/master --no-edit -X ours || true
 
-      - name: Remove Upstream Workflows
+          # Resolve specific conflicts
+          
+          # 1. Dockerfile: Ensure we keep our version
+          if git diff --name-only --diff-filter=U | grep -q "Dockerfile"; then
+             echo "Resolving Dockerfile conflict by keeping ours..."
+             git checkout --ours Dockerfile
+             git add Dockerfile
+          fi
+
+          # 2. Workflows: Ensure unwanted upstream workflows are deleted
+          # "depends.yml" showed up in conflicts too.
+          for workflow in build.yml guix.yml depends.yml; do
+             if git diff --name-only --diff-filter=U | grep -q ".github/workflows/$workflow"; then
+                echo "Resolving conflict for $workflow by removing it..."
+                git rm .github/workflows/$workflow
+             fi
+          done
+          
+          # Commit the merge if it was interrupted by conflicts
+          if [ -f .git/MERGE_HEAD ]; then
+             git commit -m "Merge upstream with custom resolutions [skip ci]"
+          fi
+
+      - name: Remove Upstream Workflows (Cleanup)
         run: |
-          # Ensure these workflows are removed if they were reintroduced by the merge
-          if [ -f .github/workflows/build.yml ] || [ -f .github/workflows/guix.yml ]; then
-            git rm --ignore-unmatch .github/workflows/build.yml .github/workflows/guix.yml
+          # Double check and remove if they sneaked in without conflict
+          git rm --ignore-unmatch .github/workflows/build.yml .github/workflows/guix.yml .github/workflows/depends.yml || true
+          
+          # Commit removal if needed
+          if ! git diff --quiet --cached; then
             git commit -m "Remove upstream workflows [skip ci]"
           fi
 
