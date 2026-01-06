@@ -1,9 +1,9 @@
 name: Build Docker Image
 
 on:
-  release:
-    types:
-      - published
+  push:
+    tags:
+      - 'v*'
 
 jobs:
   build-docker:
@@ -26,7 +26,7 @@ jobs:
           context: .
           file: ./Dockerfile  # Ensure the correct Dockerfile is used
           push: true
-          tags: nyancod3r/monero_cli:${{ github.event.release.tag_name }},nyancod3r/monero_cli:latest,nyancod3r/monero_cli:${{ github.sha }}
+          tags: nyancod3r/monero_cli:${{ github.ref_name }},nyancod3r/monero_cli:latest,nyancod3r/monero_cli:${{ github.sha }}
 
       - name: Extract Hash from Logs
         run: |

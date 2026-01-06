@@ -1,0 +1,53 @@
+name: Sync Upstream
+
+permissions:
+  contents: write
+
+on:
+  schedule:
+    - cron: '0 0 * * *' # Run daily at midnight
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure Git
+        run: |
+          git config user.name "GitHub Action"
+          git config user.email "action@github.com"
+
+      - name: Add Upstream Remote
+        run: git remote add upstream https://github.com/monero-project/monero.git
+
+      - name: Fetch Upstream
+        run: git fetch upstream
+
+      - name: Merge Upstream Master
+        run: |
+          # Merge upstream changes
+          git merge upstream/master --no-edit
+
+      - name: Remove Upstream Workflows
+        run: |
+          # Ensure these workflows are removed if they were reintroduced by the merge
+          if [ -f .github/workflows/build.yml ] || [ -f .github/workflows/guix.yml ]; then
+            git rm --ignore-unmatch .github/workflows/build.yml .github/workflows/guix.yml
+            git commit -m "Remove upstream workflows [skip ci]"
+          fi
+
+      - name: Push Changes
+        run: git push origin master
+
+      - name: Sync Tags
+        run: |
+          git fetch upstream --tags
+          # Pushing tags will trigger the 'Build Docker Image' workflow
+          git push origin --tags
