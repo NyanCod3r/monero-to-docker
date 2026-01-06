@@ -137,8 +137,8 @@ Dates are provided in the format YYYY-MM-DD. The "Minimum" is the software versi
 | 1978433                        | 2019-11-30 | v12               | v0.15.0.0              | v0.16.0.0                  | New PoW based on RandomX, only allow >= 2 outputs, change to the block median used to calculate penalty, v1 coinbases are forbidden, rct sigs in coinbase forbidden, 10 block lock time for incoming outputs
 | 2210000                        | 2020-10-17 | v13               | v0.17.0.0              | v0.17.3.2                  | New CLSAG transaction format
 | 2210720                        | 2020-10-18 | v14               | v0.17.1.1              | v0.17.3.2                  | forbid old MLSAG transaction format
-| 2688888                        | 2022-08-13 | v15               | v0.18.0.0              | v0.18.1.2                  | ringsize = 16, bulletproofs+, view tags, adjusted dynamic block weight algorithm
-| 2689608                        | 2022-08-14 | v16               | v0.18.0.0              | v0.18.1.2                  | forbid old v14 transaction format
+| 2688888                        | 2022-08-13 | v15               | v0.18.0.0              | v0.18.4.5                  | ringsize = 16, bulletproofs+, view tags, adjusted dynamic block weight algorithm
+| 2689608                        | 2022-08-14 | v16               | v0.18.0.0              | v0.18.4.5                  | forbid old v14 transaction format
 | XXXXXXX                        | XXX-XX-XX | XXX                | vX.XX.X.X              | vX.XX.X.X                  | XXX |
 
 X's indicate that these details have not been determined as of commit date.
@@ -165,7 +165,7 @@ library archives (`.a`).
 | Dep          | Min. version  | Vendored | Debian/Ubuntu pkg    | Arch pkg     | Void pkg           | Fedora pkg          | Optional | Purpose         |
 | ------------ | ------------- | -------- | -------------------- | ------------ | ------------------ | ------------------- | -------- | --------------- |
 | GCC          | 7             | NO       | `build-essential`    | `base-devel` | `base-devel`       | `gcc`               | NO       |                 |
-| CMake        | 3.5           | NO       | `cmake`              | `cmake`      | `cmake`            | `cmake`             | NO       |                 |
+| CMake        | 3.10          | NO       | `cmake`              | `cmake`      | `cmake`            | `cmake`             | NO       |                 |
 | pkg-config   | any           | NO       | `pkg-config`         | `base-devel` | `base-devel`       | `pkgconf`           | NO       |                 |
 | Boost        | 1.66          | NO       | `libboost-all-dev`   | `boost`      | `boost-devel`      | `boost-devel`       | NO       | C++ libraries   |
 | OpenSSL      | basically any | NO       | `libssl-dev`         | `openssl`    | `openssl-devel`    | `openssl-devel`     | NO       | sha256 sum      |
@@ -322,7 +322,7 @@ Tested on a Raspberry Pi 5B with a clean installation of Raspberry Pi OS (64-bit
     ```bash
     git clone --recursive https://github.com/monero-project/monero.git
     cd monero
-    git checkout v0.18.3.4
+    git checkout v0.18.4.1
     ```
 
 * Build:
@@ -385,10 +385,10 @@ application.
     cd monero
     ```
 
-* If you would like a specific [version/tag](https://github.com/monero-project/monero/tags), do a git checkout for that version. eg. 'v0.18.3.4'. If you don't care about the version and just want binaries from master, skip this step:
+* If you would like a specific [version/tag](https://github.com/monero-project/monero/tags), do a git checkout for that version. eg. 'v0.18.4.1'. If you don't care about the version and just want binaries from master, skip this step:
 
     ```bash
-    git checkout v0.18.3.4
+    git checkout v0.18.4.1
     ```
 
 * To build Monero, run:
@@ -466,8 +466,14 @@ You can also cross-compile static binaries on Linux for Windows and macOS with t
     update-alternatives --set x86_64-w64-mingw32-g++ $(which x86_64-w64-mingw32-g++-posix) && \
     update-alternatives --set x86_64-w64-mingw32-gcc $(which x86_64-w64-mingw32-gcc-posix)
     ```
-* ```make depends target=x86_64-apple-darwin``` for macOS binaries.
-  * Requires: `cmake imagemagick libcap-dev librsvg2-bin libz-dev libbz2-dev libtiff-tools python-dev`
+* ```make depends target=x86_64-apple-darwin``` for Intel macOS binaries.
+  * Requires: `clang-18 lld-18`
+* ```make depends target=arm64-apple-darwin``` for Apple Silicon macOS binaries.
+  * Requires: `clang-18 lld-18`
+  * You also need to run:
+    ```shell
+    export PATH="/usr/lib/llvm-18/bin/:$PATH"
+    ```
 * ```make depends target=i686-linux-gnu``` for 32-bit linux binaries.
   * Requires: `g++-multilib bc`
 * ```make depends target=i686-w64-mingw32``` for 32-bit windows binaries.
@@ -510,18 +516,15 @@ See [contrib/guix/README.md](contrib/guix/README.md).
 
 Packages are available for
 
-* Debian Buster
-
-    See the [instructions in the whonix/monero-gui repository](https://gitlab.com/whonix/monero-gui#how-to-install-monero-using-apt-get)
-
-* Debian Bullseye and Sid
+* Debian 12 (Bookworm) or later
 
     ```bash
     sudo apt install monero
     ```
-More info and versions in the [Debian package tracker](https://tracker.debian.org/pkg/monero).
+  More info and versions in the [Debian package tracker](https://tracker.debian.org/pkg/monero).
 
-* Arch Linux [(via Community packages)](https://www.archlinux.org/packages/community/x86_64/monero/):
+
+* Arch Linux:
 
     ```bash
     sudo pacman -S monero
@@ -533,7 +536,7 @@ More info and versions in the [Debian package tracker](https://tracker.debian.or
     nix-shell -p monero-cli
     ```
 
-* GuixSD
+* Guix:
 
     ```bash
     guix package -i monero
@@ -576,8 +579,8 @@ More info and versions in the [Debian package tracker](https://tracker.debian.or
     docker run -it -d -v /monero/chain:/home/monero/.bitmonero -v /monero/wallet:/wallet -p 18080:18080 monero
     ```
 
-* The build needs 3 GB space.
-* Wait one hour or more
+  * The build needs 3 GB space.
+  * Wait one hour or more
 
 Packaging for your favorite distribution would be a welcome contribution!
 
@@ -632,25 +635,13 @@ setting the following configuration parameters and environment variables:
   monerod.conf to disable listening for connections on external interfaces.
 * `--no-igd` on the command line or `no-igd=1` in monerod.conf to disable IGD
   (UPnP port forwarding negotiation), which is pointless with Tor.
-* `DNS_PUBLIC=tcp` or `DNS_PUBLIC=tcp://x.x.x.x` where x.x.x.x is the IP of the
-  desired DNS server, for DNS requests to go over TCP, so that they are routed
-  through Tor. When IP is not specified, monerod uses the default list of
-  servers defined in [src/common/dns_utils.cpp](src/common/dns_utils.cpp).
-* `TORSOCKS_ALLOW_INBOUND=1` to tell torsocks to allow monerod to bind to interfaces
-   to accept connections from the wallet. On some Linux systems, torsocks
-   allows binding to localhost by default, so setting this variable is only
-   necessary to allow binding to local LAN/VPN interfaces to allow wallets to
-   connect from remote hosts. On other systems, it may be needed for local wallets
-   as well.
-* Do NOT pass `--detach` when running through torsocks with systemd, (see
-  [utils/systemd/monerod.service](utils/systemd/monerod.service) for details).
 * If you use the wallet with a Tor daemon via the loopback IP (eg, 127.0.0.1:9050),
   then use `--untrusted-daemon` unless it is your own hidden service.
 
 Example command line to start monerod through Tor:
 
 ```bash
-DNS_PUBLIC=tcp torsocks monerod --p2p-bind-ip 127.0.0.1 --no-igd
+monerod --proxy 127.0.0.1:9050 --p2p-bind-ip 127.0.0.1 --no-igd
 ```
 
 A helper script is in contrib/tor/monero-over-tor.sh. It assumes Tor is installed

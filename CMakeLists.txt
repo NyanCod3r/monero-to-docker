@@ -28,7 +28,7 @@
 #
 # Parts of this file are originally copyright (c) 2012-2013 The Cryptonote developers
 
-cmake_minimum_required(VERSION 3.5)
+cmake_minimum_required(VERSION 3.10)
 message(STATUS "CMake version ${CMAKE_VERSION}")
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
@@ -42,6 +42,9 @@ include(CheckLibraryExists)
 include(CheckFunctionExists)
 if (POLICY CMP0148)
     cmake_policy(SET CMP0148 OLD) # https://cmake.org/cmake/help/latest/policy/CMP0148.html
+endif()
+if (POLICY CMP0077)
+    cmake_policy(SET CMP0077 NEW)
 endif()
 include(FindPythonInterp)
 
@@ -222,7 +225,7 @@ function(forbid_undefined_symbols)
     file(MAKE_DIRECTORY "${TEST_PROJECT}")
     file(WRITE "${TEST_PROJECT}/CMakeLists.txt"
       [=[
-cmake_minimum_required(VERSION 3.5)
+cmake_minimum_required(VERSION 3.10)
 project(test)
 option(EXPECT_SUCCESS "" ON)
 file(WRITE "${CMAKE_SOURCE_DIR}/incorrect_source.cpp" "void undefined_symbol(); void symbol() { undefined_symbol(); }")
@@ -360,6 +363,7 @@ else()
   message(STATUS "Building without build tag")
 endif()
 
+option(MANUAL_SUBMODULES "Skip submodule up-to-date checks" OFF)
 if(NOT MANUAL_SUBMODULES)
   find_package(Git)
   if(GIT_FOUND)
@@ -483,8 +487,8 @@ endif()
 option(SANITIZE "Use ASAN memory sanitizer" OFF)
 if(SANITIZE)
   message(STATUS "Using ASAN")
-  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fsanitize=address")
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fsanitize=address")
+  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fsanitize=address,undefined")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fsanitize=address,undefined")
 endif()
 
 # Set default blockchain storage location:
@@ -764,13 +768,6 @@ include(CheckTrezor)
     set(STATIC_ASSERT_FLAG "-Dstatic_assert=_Static_assert")
   endif()
 
-  try_compile(STATIC_ASSERT_CPP_RES "${CMAKE_CURRENT_BINARY_DIR}/static-assert" "${CMAKE_CURRENT_SOURCE_DIR}/cmake/test-static-assert.cpp" CMAKE_FLAGS -DCMAKE_CXX_STANDARD=11)
-  if(STATIC_ASSERT_CPP_RES)
-    set(STATIC_ASSERT_CPP_FLAG "")
-  else()
-    set(STATIC_ASSERT_CPP_FLAG "-Dstatic_assert=_Static_assert")
-  endif()
-
   monero_enable_coverage()
   # With GCC 6.1.1 the compiled binary malfunctions due to aliasing. Until that
   # is fixed in the code (Issue #847), force compiler to be conservative.
@@ -855,7 +852,7 @@ include(CheckTrezor)
   message(STATUS "Using linker security hardening flags: ${LD_SECURITY_FLAGS}")
 
   set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -D_GNU_SOURCE ${MINGW_FLAG} ${STATIC_ASSERT_FLAG} ${WARNINGS} ${C_WARNINGS} ${PIC_FLAG} ${C_SECURITY_FLAGS}")
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -D_GNU_SOURCE ${MINGW_FLAG} ${STATIC_ASSERT_CPP_FLAG} ${WARNINGS} ${CXX_WARNINGS} ${PIC_FLAG} ${CXX_SECURITY_FLAGS}")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -D_GNU_SOURCE ${MINGW_FLAG} ${WARNINGS} ${CXX_WARNINGS} ${PIC_FLAG} ${CXX_SECURITY_FLAGS}")
   set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${LD_SECURITY_FLAGS}")
 
   # With GCC 6.1.1 the compiled binary malfunctions due to aliasing. Until that
@@ -1066,7 +1063,19 @@ if(MINGW)
   set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -Wa,-mbig-obj")
   set(EXTRA_LIBRARIES mswsock;ws2_32;iphlpapi;crypt32;bcrypt)
   if(NOT DEPENDS)
-    set(ICU_LIBRARIES icuio icuin icuuc icudt icutu iconv)
+    # This is an extremely ugly hack to get around Boost not being built with static ICU.
+    # We reported the issue, we are waiting for upstream to fix this issue: https://github.com/boostorg/boost/issues/1079#issue-3384962885
+    # This hack links shared ICU libs to avoid linker errors we get in MSYS2 compilation (undefined symbols to ICU).
+    set(OLD_LIB_SUFFIXES ${CMAKE_FIND_LIBRARY_SUFFIXES})
+    set(CMAKE_FIND_LIBRARY_SUFFIXES ".dll.a")
+    find_library(ICUIO_LIBRARIES NAMES icuio REQUIRED)
+    find_library(ICUIN_LIBRARIES NAMES icuin REQUIRED)
+    find_library(ICUUC_LIBRARIES NAMES icuuc REQUIRED)
+    find_library(ICUDT_LIBRARIES NAMES icudt REQUIRED)
+    find_library(ICUTU_LIBRARIES NAMES icutu REQUIRED)
+    find_library(ICONV_LIBRARIES NAMES iconv REQUIRED)
+    set(ICU_LIBRARIES ${ICUIO_LIBRARIES} ${ICUIN_LIBRARIES} ${ICUUC_LIBRARIES} ${ICUDT_LIBRARIES} ${ICUTU_LIBRARIES} ${ICONV_LIBRARIES})
+    set(CMAKE_FIND_LIBRARY_SUFFIXES ${OLD_LIB_SUFFIXES})
   endif()
 elseif(APPLE OR OPENBSD OR ANDROID)
   set(EXTRA_LIBRARIES "")
@@ -1139,6 +1148,7 @@ add_subdirectory(contrib)
 add_subdirectory(src)
 
 find_package(PythonInterp)
+option(ENABLE_FUZZ_TEST "Enable fuzz testing." OFF)
 if(BUILD_TESTS)
   message(STATUS "Building tests")
   add_subdirectory(tests)
@@ -1176,13 +1186,3 @@ endif()
 
 # when ON - will install libwallet_merged into "lib"
 option(BUILD_GUI_DEPS "Build GUI dependencies." OFF)
-
-find_package(PythonInterp)
-find_program(iwyu_tool_path NAMES iwyu_tool.py iwyu_tool)
-if (iwyu_tool_path AND PYTHONINTERP_FOUND)
-  add_custom_target(iwyu
-    COMMAND "${PYTHON_EXECUTABLE}" "${iwyu_tool_path}" -p "${CMAKE_BINARY_DIR}" -- --no_fwd_decls
-    COMMENT "Running include-what-you-use tool"
-    VERBATIM
-  )
-endif()
