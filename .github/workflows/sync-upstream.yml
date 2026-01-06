@@ -73,8 +73,25 @@ jobs:
       - name: Push Changes
         run: git push origin master
 
-      - name: Sync Tags
+      - name: Sync Tags and Trigger Build
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
           git fetch upstream --tags
-          # Pushing tags will trigger the 'Build Docker Image' workflow
-          git push origin --tags
+          
+          # Capture output of push to identify new tags
+          push_output=$(git push origin --tags 2>&1)
+          echo "$push_output"
+
+          # Extract new tags (format: * [new tag] v0.18.0.0 -> v0.18.0.0)
+          new_tags=$(echo "$push_output" | grep "\* \[new tag\]" | awk '{print $4}')
+          
+          if [ -z "$new_tags" ]; then
+            echo "No new tags found."
+          else
+            echo "Found new tags: $new_tags"
+            for tag in $new_tags; do
+                echo "Triggering build for tag: $tag"
+                gh workflow run build-docker.yaml -f tag_name="$tag" || echo "Failed to trigger for $tag"
+            done
+          fi
