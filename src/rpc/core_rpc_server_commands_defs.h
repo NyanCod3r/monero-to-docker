@@ -189,7 +189,6 @@ inline const std::string get_rpc_status(const bool trusted_daemon, const std::st
       uint64_t    start_height;
       bool        prune;
       bool        no_miner_tx;
-      bool        high_height_ok;
       uint64_t    pool_info_since;
       uint64_t    max_block_count;
 
@@ -200,7 +199,6 @@ inline const std::string get_rpc_status(const bool trusted_daemon, const std::st
         KV_SERIALIZE(start_height)
         KV_SERIALIZE(prune)
         KV_SERIALIZE_OPT(no_miner_tx, false)
-        KV_SERIALIZE_OPT(high_height_ok, false) // default false maintains backwards compatibility for clients that relied on failure on high height
         KV_SERIALIZE_OPT(pool_info_since, (uint64_t)0)
         KV_SERIALIZE_OPT(max_block_count, (uint64_t)0)
       END_KV_SERIALIZE_MAP()
@@ -355,36 +353,6 @@ inline const std::string get_rpc_status(const bool trusted_daemon, const std::st
       END_KV_SERIALIZE_MAP()
     };
     typedef epee::misc_utils::struct_init<response_t> response;
-  };
-  //-----------------------------------------------
-  struct COMMAND_RPC_SUBMIT_RAW_TX
-  {
-      struct request_t
-      {
-        std::string address;
-        std::string view_key;
-        std::string tx;
-
-        BEGIN_KV_SERIALIZE_MAP()
-          KV_SERIALIZE(address)
-          KV_SERIALIZE(view_key)
-          KV_SERIALIZE(tx)  
-        END_KV_SERIALIZE_MAP()
-      };
-      typedef epee::misc_utils::struct_init<request_t> request;
-    
-      
-      struct response_t
-      {
-        std::string status;
-        std::string error;
-        
-        BEGIN_KV_SERIALIZE_MAP()
-          KV_SERIALIZE(status)
-          KV_SERIALIZE(error)
-        END_KV_SERIALIZE_MAP()
-      };
-      typedef epee::misc_utils::struct_init<response_t> response;
   };
   //-----------------------------------------------
   struct COMMAND_RPC_GET_TRANSACTIONS

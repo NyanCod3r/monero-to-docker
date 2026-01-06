@@ -28,6 +28,13 @@
 // 
 // Parts of this file are originally copyright (c) 2012-2013 The Cryptonote developers
 
+#pragma once
+
+#include <cstdint>
+#include <cstddef>
+#include <string>
+#include <type_traits>
+
 namespace serialization
 {
   namespace detail
@@ -125,7 +132,8 @@ bool do_serialize_container(Archive<true> &ar, C &v)
     if (i != v.begin())
       ar.delimit_array();
     using serializable_value_type = typename ::serialization::detail::serializable_value_type<C>::type;
-    if(!::serialization::detail::serialize_container_element(ar, (serializable_value_type&)*i))
+    auto &i_ref = const_cast<serializable_value_type&>(reinterpret_cast<const serializable_value_type&>(*i));
+    if(!::serialization::detail::serialize_container_element(ar, i_ref))
       return false;
     if (!ar.good())
       return false;

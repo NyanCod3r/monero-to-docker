@@ -1,24 +1,16 @@
 (use-modules (gnu packages)
-             (gnu packages autotools)
              (gnu packages bash)
              ((gnu packages cmake) #:select (cmake-minimal))
              (gnu packages commencement)
              (gnu packages compression)
              (gnu packages cross-base)
-             ((gnu packages elf) #:select (patchelf))
-             (gnu packages file)
              (gnu packages gawk)
              (gnu packages gcc)
-             (gnu packages gperf)
-             ((gnu packages libusb) #:select (libplist))
-             ((gnu packages linux) #:select (linux-libre-headers-6.1 util-linux))
+             ((gnu packages linux) #:select (linux-libre-headers-6.1))
              (gnu packages llvm)
              (gnu packages mingw)
-             (gnu packages moreutils)
              (gnu packages perl)
              (gnu packages pkg-config)
-             ((gnu packages python) #:select (python-minimal))
-             ((gnu packages tls) #:select (openssl))
              ((gnu packages version-control) #:select (git-minimal))
              (guix build-system gnu)
              (guix build-system trivial)
@@ -180,7 +172,7 @@ chain for " target " development."))
 
 (define-public glibc-2.27
   (package
-    (inherit glibc-2.31)
+    (inherit glibc-2.33)
     (version "2.27")
     (source (origin
               (method git-fetch)
@@ -217,7 +209,7 @@ chain for " target " development."))
                    (("^install-others =.*$")
                     (string-append "install-others = " out "/etc/rpc\n"))))))))))
     (native-inputs
-      (modify-inputs (package-native-inputs glibc-2.31)
+      (modify-inputs (package-native-inputs glibc-2.33)
         (delete "make")
         (append gnu-make-4.2))))) ;; make >= 4.4 causes an infinite loop (stdio-common)
 
@@ -249,7 +241,6 @@ chain for " target " development."))
         which
 
         ;; File(system) inspection
-        file
         grep
         diffutils ; provides diff
         findutils ; provides find and xargs
@@ -258,25 +249,19 @@ chain for " target " development."))
         patch
         gawk
         sed
-        patchelf  ; unused, occassionally useful for debugging
 
         ;; Compression and archiving
         tar
-        bzip2 ; used to create release archives (non-windows)
-        gzip  ; used to unpack most packages in depends
-        xz    ; used to unpack freebsd_base
-        zip   ; used to create release archives (windows)
-        unzip ; used to unpack android_ndk
+        bzip2 ; used to unpack depends packages, create release archives (non-windows)
+        gzip  ; used to unpack depends packages
 
         ;; Build tools
         gnu-make
-        libtool
         pkg-config
         cmake-minimal
 
         ;; Scripting
-        perl           ; required to build openssl in depends
-        python-minimal ; required to build monero (cmake/CheckTrezor.cmake) and in android_ndk
+        perl ; required to build openssl in depends
 
         ;; Git
         git-minimal ; used to create the release source archive
@@ -284,6 +269,7 @@ chain for " target " development."))
   (let ((target (getenv "HOST")))
     (cond ((string-suffix? "-mingw32" target)
            (list
+             zip ; used to create release archives
              gcc-toolchain-12
              (make-mingw-pthreads-cross-toolchain target)))
           ((string-contains target "-linux-gnu")
@@ -293,16 +279,20 @@ chain for " target " development."))
              (make-monero-cross-toolchain target)))
           ((string-contains target "freebsd")
            (list
+             xz ; used to unpack freebsd_base
              gcc-toolchain-12
              (list gcc-toolchain-12 "static")
-             clang-toolchain-11 binutils))
+             clang-toolchain-18
+             binutils))
           ((string-contains target "android")
             (list
+              unzip ; used to unpack android_ndk
               gcc-toolchain-12
               (list gcc-toolchain-12 "static")))
           ((string-contains target "darwin")
            (list
-             gcc-toolchain-10
-             clang-toolchain-11
-             binutils))
+             gcc-toolchain-12
+             clang-toolchain-18
+             lld-18
+             (make-lld-wrapper lld-18 #:lld-as-ld? #t)))
           (else '())))))

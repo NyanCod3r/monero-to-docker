@@ -1093,7 +1093,7 @@ class File : base::StaticClass {
   static std::string extractPathFromFilename(const std::string& fullPath,
       const char* seperator = base::consts::kFilePathSeperator);
   /// @brief builds stripped filename and puts it in buff
-  static void buildStrippedFilename(const char* filename, char buff[], const std::string &commonPrefix = NULL,
+  static void buildStrippedFilename(const char* filename, char buff[], const std::string &commonPrefix = "",
                                     std::size_t limit = base::consts::kSourceFilenameMaxLength);
   /// @brief builds base filename and puts it in buff
   static void buildBaseFilename(const std::string& fullPath, char buff[],
@@ -3263,47 +3263,25 @@ class Writer : base::NoCopy {
          const char* func, base::DispatchAction dispatchAction = base::DispatchAction::NormalLog,
          base::type::VerboseLevel verboseLevel = 0) :
     m_msg(nullptr), m_level(level), m_color(color), m_file(file), m_line(line), m_func(func), m_verboseLevel(verboseLevel),
-    m_logger(nullptr), m_proceed(false), m_dispatchAction(dispatchAction) {
+    m_logger(nullptr), m_proceed(false), m_dispatchAction(dispatchAction), m_sync(ELPP->lock()) {
   }
 
   Writer(LogMessage* msg, base::DispatchAction dispatchAction = base::DispatchAction::NormalLog) :
     m_msg(msg), m_level(msg != nullptr ? msg->level() : Level::Unknown),
-    m_line(0), m_logger(nullptr), m_proceed(false), m_dispatchAction(dispatchAction) {
+    m_line(0), m_logger(nullptr), m_proceed(false), m_dispatchAction(dispatchAction), m_sync(ELPP->lock()) {
   }
 
   virtual ~Writer(void) {
     processDispatch();
   }
 
-  template <typename T>
-  inline typename std::enable_if<std::is_integral<T>::value, Writer&>::type
-  operator<<(T log) {
+  Writer& operator<<(const std::string &log) {
 #if ELPP_LOGGING_ENABLED
   if (m_proceed) {
     m_messageBuilder << log;
   }
 #endif  // ELPP_LOGGING_ENABLED
   return *this;
-  }
-
-  template <typename T>
-  inline typename std::enable_if<!std::is_integral<T>::value, Writer&>::type
-  operator<<(const T& log) {
-#if ELPP_LOGGING_ENABLED
-    if (m_proceed) {
-      m_messageBuilder << log;
-    }
-#endif  // ELPP_LOGGING_ENABLED
-    return *this;
-  }
-
-  inline Writer& operator<<(std::ostream& (*log)(std::ostream&)) {
-#if ELPP_LOGGING_ENABLED
-    if (m_proceed) {
-      m_messageBuilder << log;
-    }
-#endif  // ELPP_LOGGING_ENABLED
-    return *this;
   }
 
   inline operator bool() {
@@ -3326,6 +3304,7 @@ class Writer : base::NoCopy {
   base::MessageBuilder m_messageBuilder;
   base::DispatchAction m_dispatchAction;
   std::vector<std::string> m_loggerIds;
+  base::threading::ScopedLock m_sync;
   friend class el::Helpers;
 
   void initializeLogger(const std::string& loggerId, bool lookup = true, bool needLock = true);
@@ -3621,8 +3600,9 @@ class DefaultPerformanceTrackingCallback : public PerformanceTrackingCallback {
         ss << ELPP_LITERAL("]");
       }
     }
+    const std::string str = ss.str();
     el::base::Writer(m_data->performanceTracker()->level(), m_data->file(), m_data->line(), m_data->func()).construct(1,
-        m_data->loggerId().c_str()) << ss.str();
+        m_data->loggerId().c_str()) << str;
   }
  private:
   const PerformanceTrackingData* m_data;

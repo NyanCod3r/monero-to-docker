@@ -31,6 +31,7 @@
 #include <boost/algorithm/string.hpp>
 #include <boost/uuid/nil_generator.hpp>
 
+#include "misc_log_ex.h"
 #include "string_tools.h"
 using namespace epee;
 
@@ -664,9 +665,21 @@ namespace cryptonote
     r = m_mempool.init(max_txpool_weight, m_nettype == FAKECHAIN);
     CHECK_AND_ASSERT_MES(r, false, "Failed to initialize memory pool");
 
+    uint64_t session_start_height = m_blockchain_storage.get_current_blockchain_height() - 1; // use top block's height
+    uint8_t hardfork_version_start = m_blockchain_storage.get_hard_fork_version(session_start_height);
+    uint8_t hardfork_version_current = m_blockchain_storage.get_current_hard_fork_version();
+    MDEBUG("Current height: " << session_start_height);
+    MDEBUG("Start hardfork version: " << (int) hardfork_version_start);
+    MDEBUG("Current hardfork version: " << (int) hardfork_version_current);
+    
     // now that we have a valid m_blockchain_storage, we can clean out any
     // transactions in the pool that do not conform to the current fork
-    m_mempool.validate(m_blockchain_storage.get_current_hard_fork_version());
+    if(hardfork_version_start != hardfork_version_current) {
+      m_mempool.validate(hardfork_version_current);
+    }
+    else {
+      MDEBUG("Not validating the txpool, no hardfork detected.");
+    }
 
     bool show_time_stats = command_line::get_arg(vm, arg_show_time_stats) != 0;
     m_blockchain_storage.set_show_time_stats(show_time_stats);
@@ -693,7 +706,7 @@ namespace cryptonote
     else if (check_updates_string == "update")
       check_updates_level = UPDATES_UPDATE;
     else {
-      MERROR("Invalid argument to --dns-versions-check: " << check_updates_string);
+      MERROR("Invalid argument to --check-updates: " << check_updates_string);
       return false;
     }
 
@@ -1037,6 +1050,8 @@ namespace cryptonote
     for(const auto& in: tx.vin)
     {
       CHECKED_GET_SPECIFIC_VARIANT(in, const txin_to_key, tokey_in, false);
+      if (rct::ki2rct(tokey_in.k_image) == rct::identity())
+        return false;
       if (!(rct::scalarmultKey(rct::ki2rct(tokey_in.k_image), rct::curveOrder()) == rct::identity()))
         return false;
     }
@@ -1297,20 +1312,23 @@ namespace cryptonote
       NOTIFY_NEW_FLUFFY_BLOCK::request arg{};
       arg.current_blockchain_height = m_blockchain_storage.get_current_blockchain_height();
       std::vector<crypto::hash> missed_txs;
-      std::vector<cryptonote::blobdata> txs;
-      m_blockchain_storage.get_transactions_blobs(b.tx_hashes, txs, missed_txs);
+      for (const auto &tx_hash : b.tx_hashes)
+      {
+        if (m_blockchain_storage.have_tx(tx_hash))
+          continue;
+        missed_txs.push_back(tx_hash);
+      }
       if(missed_txs.size() &&  m_blockchain_storage.get_block_id_by_height(get_block_height(b)) != get_block_hash(b))
       {
         LOG_PRINT_L1("Block found but, seems that reorganize just happened after that, do not relay this block");
         return true;
       }
-      CHECK_AND_ASSERT_MES(txs.size() == b.tx_hashes.size() && !missed_txs.size(), false, "can't find some transactions in found block:" << get_block_hash(b) << " txs.size()=" << txs.size()
-        << ", b.tx_hashes.size()=" << b.tx_hashes.size() << ", missed_txs.size()" << missed_txs.size());
+      CHECK_AND_ASSERT_MES(!missed_txs.size(), false, "can't find some transactions in found block:" << get_block_hash(b)
+        << " b.tx_hashes.size()=" << b.tx_hashes.size() << ", missed_txs.size()" << missed_txs.size());
 
       block_to_blob(b, arg.b.block);
-      //pack transactions
-      for(auto& tx:  txs)
-        arg.b.txs.push_back({tx, crypto::null_hash});
+      // Relay an empty fluffy block
+      arg.b.txs.clear();
 
       m_pprotocol->relay_block(arg, exclude_context);
     }
@@ -1528,9 +1546,9 @@ namespace cryptonote
     return m_mempool.get_pool_for_rpc(tx_infos, key_image_infos);
   }
   //-----------------------------------------------------------------------------------------------
-  bool core::get_short_chain_history(std::list<crypto::hash>& ids) const
+  bool core::get_short_chain_history(std::list<crypto::hash>& ids, uint64_t& current_height) const
   {
-    return m_blockchain_storage.get_short_chain_history(ids);
+    return m_blockchain_storage.get_short_chain_history(ids, current_height);
   }
   //-----------------------------------------------------------------------------------------------
   bool core::handle_get_objects(NOTIFY_REQUEST_GET_OBJECTS::request& arg, NOTIFY_RESPONSE_GET_OBJECTS::request& rsp, cryptonote_connection_context& context)

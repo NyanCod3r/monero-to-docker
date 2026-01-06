@@ -12,7 +12,7 @@ source contrib/shell/git-utils.bash
 
 # Although Guix _does_ set umask when building its own packages (in our case,
 # this is all packages in manifest.scm), it does not set it for `guix
-# environment`. It does make sense for at least `guix environment --container`
+# shell`. It does make sense for at least `guix shell --container`
 # to set umask, so if that change gets merged upstream and we bump the
 # time-machine to a commit which includes the aforementioned change, we can
 # remove this line.
@@ -132,7 +132,7 @@ case "$HOST" in
         # See depends/hosts/darwin.mk for more details.
         ;;
     *android*)
-        export LD_LIBRARY_PATH="$(find /gnu/store -maxdepth 1 -name "*zlib*" | sort | head -n 1)/lib:$(find /gnu/store -maxdepth 1 -name "*gcc-11*-lib" | sort | head -n 1)/lib"
+        export LD_LIBRARY_PATH="$(find /gnu/store -maxdepth 1 -name "*zlib*" | sort | head -n 1)/lib:$(find /gnu/store -maxdepth 1 -name "*gcc-14*-lib" | sort | head -n 1)/lib"
         ;;
     *linux-gnu*)
         CROSS_GLIBC="$(store_path "glibc-cross-${HOST}")"
@@ -165,15 +165,6 @@ done
 
 # Disable Guix ld auto-rpath behavior
 case "$HOST" in
-    *darwin*)
-        # The auto-rpath behavior is necessary for darwin builds as some native
-        # tools built by depends refer to and depend on Guix-built native
-        # libraries
-        #
-        # After the native packages in depends are built, the ld wrapper should
-        # no longer affect our build, as clang would instead reach for
-        # x86_64-apple-darwin-ld from cctools
-        ;;
     *android*)
         ;;
     *) export GUIX_LD_WRAPPER_DISABLE_RPATH=yes ;;
@@ -183,8 +174,7 @@ esac
 [ -e /usr/bin ] || mkdir -p /usr/bin
 [ -e /lib64 ] || mkdir /lib64
 
-# Symlink file and env to a conventional path
-[ -e /usr/bin/file ] || ln -s --no-dereference "$(command -v file)" /usr/bin/file
+# Symlink env and shells to a conventional path
 [ -e /usr/bin/env ]  || ln -s --no-dereference "$(command -v env)"  /usr/bin/env
 [ -e /bin/bash ]  || ln -s --no-dereference "$(command -v bash)"  /bin/bash
 [ -e /bin/sh ]  || ln -s --no-dereference "$(command -v sh)"  /bin/sh
@@ -220,16 +210,6 @@ export GLIBC_DYNAMIC_LINKER=${glibc_dynamic_linker}
 # Environment variables for determinism
 export TAR_OPTIONS="--owner=0 --group=0 --numeric-owner --mtime='@${SOURCE_DATE_EPOCH}' --sort=name"
 export TZ="UTC"
-case "$HOST" in
-    *darwin*)
-        # cctools AR, unlike GNU binutils AR, does not have a deterministic mode
-        # or a configure flag to enable determinism by default, it only
-        # understands if this env-var is set or not. See:
-        #
-        # https://github.com/tpoechtrager/cctools-port/blob/55562e4073dea0fbfd0b20e0bf69ffe6390c7f97/cctools/ar/archive.c#L334
-        export ZERO_AR_DATE=yes
-        ;;
-esac
 
 ####################
 # Depends Building #
@@ -316,7 +296,7 @@ esac
 
 # LDFLAGS
 case "$HOST" in
-    *linux-gnu*)  HOST_LDFLAGS="-Wl,--as-needed -Wl,--dynamic-linker=$glibc_dynamic_linker -static-libstdc++" ;;
+    *linux-gnu*)  HOST_LDFLAGS="-Wl,--as-needed -Wl,--dynamic-linker=$glibc_dynamic_linker -static-libstdc++ -static-libgcc" ;;
     *mingw*)  HOST_LDFLAGS="-Wl,--no-insert-timestamp" ;;
 esac
 
@@ -346,6 +326,13 @@ mkdir -p "$DISTSRC"
     # extracted source archive. The guix-build script makes sure submodules are
     # checked out before starting a build.
     CMAKEFLAGS+=" -DMANUAL_SUBMODULES=1"
+
+    # Enabling stack traces causes a compilation issue on Linux targets.
+    # Gitian builds did not enable stack traces either, so this is not a
+    # regression.
+    case "$HOST" in
+        *linux-gnu*)  CMAKEFLAGS+=" -DSTACK_TRACE=OFF" ;;
+    esac
 
     # Configure this DISTSRC for $HOST
     # shellcheck disable=SC2086
