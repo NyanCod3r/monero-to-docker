@@ -1,0 +1,39 @@
+name: Create Release from Tag
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # To create the release
+    steps:
+      - name: Get Upstream Release Info and Create Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          UPSTREAM_REPO: "monero-project/monero"
+        run: |
+          TAG_NAME="${{ github.ref_name }}"
+          echo "Processing tag: $TAG_NAME"
+
+          # Fetch release data from upstream repository
+          release_data=$(gh api "repos/$UPSTREAM_REPO/releases/tags/$TAG_NAME")
+          
+          if [ -z "$release_data" ]; then
+            echo "No release found on upstream for tag $TAG_NAME. Creating a default release."
+            RELEASE_TITLE="$TAG_NAME"
+            RELEASE_BODY="Release for version $TAG_NAME."
+          else
+            RELEASE_TITLE=$(echo "$release_data" | jq -r '.name')
+            RELEASE_BODY=$(echo "$release_data" | jq -r '.body')
+          fi
+
+          echo "Creating release '$RELEASE_TITLE' for tag '$TAG_NAME'"
+
+          # Create a new release in this repository
+          gh release create "$TAG_NAME" \
+            --title "$RELEASE_TITLE" \
+            --notes "$RELEASE_BODY"

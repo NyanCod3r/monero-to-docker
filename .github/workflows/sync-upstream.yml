@@ -76,5 +76,5 @@ jobs:
       - name: Sync Tags
         run: |
           git fetch upstream --tags
-          # Pushing tags will trigger the 'Build Docker Image' workflow
+          # Pushing new tags will trigger the 'Create Release from Tag' workflow
           git push origin --tags
