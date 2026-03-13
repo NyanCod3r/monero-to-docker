@@ -16,6 +16,11 @@ jobs:
     permissions:
       contents: write # To create the release
     steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - name: Get Upstream Release Info and Create Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -44,5 +49,6 @@ jobs:
 
           # Create a new release in this repository
           gh release create "$TAG_NAME" \
+            --repo "${{ github.repository }}" \
             --title "$RELEASE_TITLE" \
             --notes "$RELEASE_BODY"
