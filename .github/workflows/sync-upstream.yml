@@ -47,8 +47,7 @@ jobs:
           fi
 
           # 2. Workflows: Ensure unwanted upstream workflows are deleted
-          # "depends.yml" showed up in conflicts too.
-          for workflow in build.yml guix.yml depends.yml; do
+          for workflow in build.yml guix.yml depends.yml gitian.yml; do
              if git diff --name-only --diff-filter=U | grep -q ".github/workflows/$workflow"; then
                 echo "Resolving conflict for $workflow by removing it..."
                 git rm .github/workflows/$workflow
@@ -63,7 +62,7 @@ jobs:
       - name: Remove Upstream Workflows (Cleanup)
         run: |
           # Double check and remove if they sneaked in without conflict
-          git rm --ignore-unmatch .github/workflows/build.yml .github/workflows/guix.yml .github/workflows/depends.yml || true
+          git rm --ignore-unmatch .github/workflows/build.yml .github/workflows/guix.yml .github/workflows/depends.yml .github/workflows/gitian.yml || true
           
           # Commit removal if needed
           if ! git diff --quiet --cached; then
@@ -73,8 +72,24 @@ jobs:
       - name: Push Changes
         run: git push origin master
 
-      - name: Sync Tags
+      - name: Sync Tags and Trigger Builds
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
+          # Capture existing tags on origin before push
+          existing_tags=$(git ls-remote --tags origin | grep -oP 'refs/tags/v[\d.]+$' | sed 's|refs/tags/||' || true)
+
+          # Fetch all upstream tags
           git fetch upstream --tags
-          # Pushing new tags will trigger the 'Create Release from Tag' workflow
+
+          # Push all tags to origin
           git push origin --tags
+
+          # Find new v* tags and trigger build + release workflows
+          for tag in $(git tag -l 'v*' --sort=-v:refname); do
+            if ! echo "$existing_tags" | grep -qx "$tag"; then
+              echo "New tag detected: $tag — triggering workflows"
+              gh workflow run build-docker.yaml -f tag_name="$tag" || echo "Failed to trigger build-docker for $tag"
+              gh workflow run create-release.yml -f tag_name="$tag" || echo "Failed to trigger create-release for $tag"
+            fi
+          done
