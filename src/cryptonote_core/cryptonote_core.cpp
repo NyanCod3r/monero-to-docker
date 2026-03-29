@@ -1407,7 +1407,11 @@ namespace cryptonote
   bool core::prepare_handle_incoming_blocks(const std::vector<block_complete_entry> &blocks_entry, std::vector<block> &blocks)
   {
     m_incoming_tx_lock.lock();
-    if (!m_blockchain_storage.prepare_handle_incoming_blocks(blocks_entry, blocks))
+    bool success = false;
+    try { success = m_blockchain_storage.prepare_handle_incoming_blocks(blocks_entry, blocks); }
+    catch (const std::exception &e) { MERROR("Failed prepare handle incoming blocks: " << e.what()); }
+    catch (...) { MERROR("Failed prepare handling incoming blocks"); }
+    if (!success)
     {
       cleanup_handle_incoming_blocks(false);
       return false;
@@ -1901,9 +1905,9 @@ namespace cryptonote
     m_blockchain_storage.flush_invalid_blocks();
   }
   //-----------------------------------------------------------------------------------------------
-  bool core::get_txpool_complement(const std::vector<crypto::hash> &hashes, std::vector<cryptonote::blobdata> &txes)
+  bool core::get_txpool_complement(std::vector<crypto::hash> hashes, std::vector<cryptonote::blobdata> &txes)
   {
-    return m_mempool.get_complement(hashes, txes);
+    return m_mempool.get_complement(std::move(hashes), txes);
   }
   //-----------------------------------------------------------------------------------------------
   bool core::update_blockchain_pruning()
