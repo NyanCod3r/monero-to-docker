@@ -984,7 +984,7 @@ bool get_pruned_tx(const cryptonote::COMMAND_RPC_GET_TRANSACTIONS::entry &entry,
     // only v2 txes can calculate their txid after pruned
     if (bd[0] > 1)
     {
-      tx_hash = cryptonote::get_pruned_transaction_hash(tx, ph);
+      CHECK_AND_ASSERT_MES(cryptonote::get_pruned_transaction_hash(tx, ph, tx_hash), false, "Failed to get pruned tx hash");
     }
     else
     {
@@ -8185,6 +8185,8 @@ bool wallet2::parse_multisig_tx_from_str(std::string multisig_tx_st, multisig_tx
     for (size_t idx: ptx.construction_data.selected_transfers)
       CHECK_AND_ASSERT_MES(idx < m_transfers.size(), false, "Transfer index out of range");
     CHECK_AND_ASSERT_MES(ptx.construction_data.sources.size() == ptx.tx.vin.size(), false, "Mismatched sources/vin sizes");
+    CHECK_AND_ASSERT_MES(!ptx.tx.vin.empty(), false, "Multisig tx has no inputs");
+    CHECK_AND_ASSERT_MES(!ptx.construction_data.sources.empty(), false, "Multisig tx has no sources");
   }
 
   return true;
