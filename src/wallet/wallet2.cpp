@@ -9730,7 +9730,7 @@ void wallet2::transfer_selected(const std::vector<cryptonote::tx_destination_ent
   //prepare inputs
   LOG_PRINT_L2("preparing outputs");
   typedef cryptonote::tx_source_entry::output_entry tx_output_entry;
-  size_t i = 0, out_index = 0;
+  size_t out_index = 0;
   std::vector<cryptonote::tx_source_entry> sources;
   for(size_t idx: selected_transfers)
   {
@@ -9749,7 +9749,6 @@ void wallet2::transfer_selected(const std::vector<cryptonote::tx_destination_ent
       oe.second.mask = std::get<2>(outs[out_index][n]);
 
       src.outputs.push_back(oe);
-      ++i;
     }
 
     //paste real transaction to the random index
@@ -9950,7 +9949,7 @@ void wallet2::transfer_selected_rct(std::vector<cryptonote::tx_destination_entry
 
   //prepare inputs
   LOG_PRINT_L2("preparing outputs");
-  size_t i = 0, out_index = 0;
+  size_t out_index = 0;
   std::vector<cryptonote::tx_source_entry> sources;
   for(size_t idx: selected_transfers)
   {
@@ -9973,7 +9972,6 @@ void wallet2::transfer_selected_rct(std::vector<cryptonote::tx_destination_entry
       oe.second.mask = std::get<2>(outs[out_index][n]);
       src.outputs.push_back(oe);
     }
-    ++i;
 
     //paste real transaction to the random index
     auto it_to_replace = std::find_if(src.outputs.begin(), src.outputs.end(), [&](const tx_output_entry& a)
@@ -11889,6 +11887,7 @@ std::string wallet2::get_spend_proof(const crypto::hash &txid, const std::string
   cryptonote::transaction tx;
   crypto::hash tx_hash;
   THROW_WALLET_EXCEPTION_IF(!get_pruned_tx(res.txs[0], tx, tx_hash), error::wallet_internal_error, "Failed to get tx from daemon");
+  THROW_WALLET_EXCEPTION_IF(tx_hash != txid, error::wallet_internal_error, "Failed to get the right transaction from daemon");
 
   std::vector<std::vector<crypto::signature>> signatures;
 
@@ -12002,6 +12001,7 @@ bool wallet2::check_spend_proof(const crypto::hash &txid, const std::string &mes
   cryptonote::transaction tx;
   crypto::hash tx_hash;
   THROW_WALLET_EXCEPTION_IF(!get_pruned_tx(res.txs[0], tx, tx_hash), error::wallet_internal_error, "failed to get tx from daemon");
+  THROW_WALLET_EXCEPTION_IF(tx_hash != txid, error::wallet_internal_error, "Failed to get the right transaction from daemon");
 
   // check signature size
   size_t num_sigs = 0;
@@ -12120,19 +12120,8 @@ void wallet2::check_tx_key_helper(const cryptonote::transaction &tx, const crypt
       }
       else
       {
-        crypto::secret_key scalar1;
-        crypto::derivation_to_scalar(found_derivation, n, scalar1);
-        rct::ecdhTuple ecdh_info = tx.rct_signatures.ecdhInfo[n];
-        rct::ecdhDecode(ecdh_info, rct::sk2rct(scalar1), tx.rct_signatures.type == rct::RCTTypeBulletproof2 || tx.rct_signatures.type == rct::RCTTypeCLSAG || tx.rct_signatures.type == rct::RCTTypeBulletproofPlus);
-        const rct::key C = tx.rct_signatures.outPk[n].mask;
-        rct::key Ctmp;
-        THROW_WALLET_EXCEPTION_IF(sc_check(ecdh_info.mask.bytes) != 0, error::wallet_internal_error, "Bad ECDH input mask");
-        THROW_WALLET_EXCEPTION_IF(sc_check(ecdh_info.amount.bytes) != 0, error::wallet_internal_error, "Bad ECDH input amount");
-        rct::addKeys2(Ctmp, ecdh_info.mask, ecdh_info.amount, rct::H);
-        if (rct::equalKeys(C, Ctmp))
-          amount = rct::h2d(ecdh_info.amount);
-        else
-          amount = 0;
+        rct::key mask;
+        amount = decodeRct(tx.rct_signatures, found_derivation, n, mask, hw::get_device("default"));
       }
       received += amount;
     }
@@ -12661,6 +12650,16 @@ bool wallet2::check_reserve_proof(const cryptonote::account_public_address &addr
   }
   catch(...) {}
 
+  THROW_WALLET_EXCEPTION_IF(!loaded, error::wallet_internal_error, "Failed to parse reserve proof signature data");
+
+  std::unordered_set<crypto::key_image> seen_key_images;
+  std::set<std::pair<crypto::hash, uint64_t>> seen_outputs;
+  for (const reserve_proof_entry &proof : proofs)
+  {
+    THROW_WALLET_EXCEPTION_IF(!seen_key_images.insert(proof.key_image).second, error::wallet_internal_error, "Duplicate key image in reserve proof");
+    THROW_WALLET_EXCEPTION_IF(!seen_outputs.emplace(proof.txid, proof.index_in_tx).second, error::wallet_internal_error, "Duplicate output in reserve proof");
+  }
+
   THROW_WALLET_EXCEPTION_IF(subaddr_spendkeys.count(address.m_spend_public_key) == 0, error::wallet_internal_error,
     "The given address isn't found in the proof");
 
@@ -12753,11 +12752,8 @@ bool wallet2::check_reserve_proof(const cryptonote::account_public_address &addr
     if (amount == 0)
     {
       // decode rct
-      crypto::secret_key shared_secret;
-      crypto::derivation_to_scalar(derivation, proof.index_in_tx, shared_secret);
-      rct::ecdhTuple ecdh_info = tx.rct_signatures.ecdhInfo[proof.index_in_tx];
-      rct::ecdhDecode(ecdh_info, rct::sk2rct(shared_secret), tx.rct_signatures.type == rct::RCTTypeBulletproof2 || tx.rct_signatures.type == rct::RCTTypeCLSAG || tx.rct_signatures.type == rct::RCTTypeBulletproofPlus);
-      amount = rct::h2d(ecdh_info.amount);
+      rct::key mask_;
+      amount = decodeRct(tx.rct_signatures, derivation, proof.index_in_tx, mask_, hw::get_device("default"));
     }
     total += amount;
     if (kispent_res.spent_status[i])
