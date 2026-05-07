@@ -472,15 +472,6 @@ if(SANITIZE)
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fsanitize=address,undefined")
 endif()
 
-# Set default blockchain storage location:
-# memory was the default in Cryptonote before Monero implemented LMDB, it still works but is unnecessary.
-# set(DATABASE memory)
-set(DATABASE lmdb)
-message(STATUS "Using LMDB as default DB type")
-set(BLOCKCHAIN_DB DB_LMDB)
-add_definitions("-DDEFAULT_DB_TYPE=\"lmdb\"")
-add_definitions("-DBLOCKCHAIN_DB=${BLOCKCHAIN_DB}")
-
 # Can't install hook in static build on OSX, because OSX linker does not support --wrap
 # On ARM, having libunwind package (with .so's only) installed breaks static link.
 # When possible, avoid stack tracing using libunwind in favor of using easylogging++.
@@ -742,12 +733,6 @@ include(CheckTrezor)
   endif()
   set(C_WARNINGS "-Waggregate-return -Wnested-externs -Wold-style-definition -Wstrict-prototypes")
   set(CXX_WARNINGS "-Wno-reorder -Wno-missing-field-initializers")
-  try_compile(STATIC_ASSERT_RES "${CMAKE_CURRENT_BINARY_DIR}/static-assert" "${CMAKE_CURRENT_SOURCE_DIR}/cmake/test-static-assert.c" CMAKE_FLAGS -DCMAKE_C_STANDARD=11)
-  if(STATIC_ASSERT_RES)
-    set(STATIC_ASSERT_FLAG "")
-  else()
-    set(STATIC_ASSERT_FLAG "-Dstatic_assert=_Static_assert")
-  endif()
 
   monero_enable_coverage()
   # With GCC 6.1.1 the compiled binary malfunctions due to aliasing. Until that
@@ -852,7 +837,7 @@ include(CheckTrezor)
   endif()
 
   if(APPLE)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fvisibility=default -DGTEST_HAS_TR1_TUPLE=0")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fvisibility=default")
     if(ARM)
       set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-aligned-allocation")
     endif()
@@ -898,9 +883,10 @@ include(CheckTrezor)
   set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} ${RELEASE_FLAGS}")
   set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} ${RELEASE_FLAGS}")
 
-  if(STATIC)
-    # STATIC already configures most deps to be linked in statically,
-    # here we make more deps static if the platform permits it
+if(STATIC)
+  # STATIC already configures most deps to be linked in statically,
+  # here we make more deps static if the platform permits it
+  if (NOT DEFINED STATIC_FLAGS)
     if (MINGW)
       # On Windows, this is as close to fully-static as we get:
       # this leaves only deps on /c/Windows/system32/*.dll
@@ -909,8 +895,9 @@ include(CheckTrezor)
       # On Linux, we don't support fully static build, but these can be static
       set(STATIC_FLAGS "-static-libgcc -static-libstdc++")
     endif()
-    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${STATIC_FLAGS} ")
   endif()
+  set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${STATIC_FLAGS} ")
+endif()
 
 set(OLD_LIB_SUFFIXES ${CMAKE_FIND_LIBRARY_SUFFIXES})
 set(Boost_NO_BOOST_CMAKE ON)
