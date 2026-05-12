@@ -543,6 +543,8 @@ if (WIN32)
   list(APPEND OPENSSL_LIBRARIES ws2_32 crypt32)
 endif()
 
+find_package(Unbound REQUIRED)
+
 find_package(HIDAPI)
 
 add_definition_if_library_exists(c memset_s "string.h" HAVE_MEMSET_S)
@@ -980,24 +982,6 @@ elseif(NOT DEPENDS)
 endif()
 
 list(APPEND EXTRA_LIBRARIES ${CMAKE_DL_LIBS})
-
-if (HIDAPI_FOUND OR LibUSB_COMPILE_TEST_PASSED)
-  if (APPLE)
-    if(DEPENDS)
-      list(APPEND EXTRA_LIBRARIES "-framework Foundation -framework AppKit -framework IOKit -framework Security")
-    else()
-      find_library(COREFOUNDATION CoreFoundation)
-      find_library(APPKIT AppKit)
-      find_library(IOKIT IOKit)
-      list(APPEND EXTRA_LIBRARIES ${APPKIT})
-      list(APPEND EXTRA_LIBRARIES ${IOKIT})
-      list(APPEND EXTRA_LIBRARIES ${COREFOUNDATION})
-    endif()
-  endif()
-  if (WIN32)
-    list(APPEND EXTRA_LIBRARIES setupapi)
-  endif()
-endif()
 
 if(NOT OPENBSD)
   option(USE_READLINE "Build with GNU readline support." ON)
