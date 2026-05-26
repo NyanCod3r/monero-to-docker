@@ -1,5 +1,4 @@
-# Copyright (c) 2018-2024, The Monero Project
-
+# Copyright (c) 2025, The Monero Project
 #
 # All rights reserved.
 #
@@ -26,11 +25,3 @@
 # INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
 # STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF
 # THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-
-set(net_sources dandelionpp.cpp error.cpp http.cpp i2p_address.cpp parse.cpp resolve.cpp
-    socks.cpp socks_connect.cpp tor_address.cpp zmq.cpp)
-monero_find_all_headers(net_headers "${CMAKE_CURRENT_SOURCE_DIR}")
-
-monero_add_library(net ${net_sources} ${net_headers})
-target_link_libraries(net common epee cncrypto PkgConfig::libzmq ${Boost_ASIO_LIBRARY})
-

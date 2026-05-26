@@ -168,7 +168,7 @@ library archives (`.a`).
 | CMake        | 3.10          | NO       | `cmake`              | `cmake`      | `cmake`            | `cmake`             | NO       |                 |
 | pkg-config   | any           | NO       | `pkg-config`         | `base-devel` | `base-devel`       | `pkgconf`           | NO       |                 |
 | Boost        | 1.66          | NO       | `libboost-all-dev`   | `boost`      | `boost-devel`      | `boost-devel`       | NO       | C++ libraries   |
-| OpenSSL      | basically any | NO       | `libssl-dev`         | `openssl`    | `openssl-devel`    | `openssl-devel`     | NO       | sha256 sum      |
+| OpenSSL      | 1.1.1         | NO       | `libssl-dev`         | `openssl`    | `openssl-devel`    | `openssl-devel`     | NO       | sha256 sum      |
 | libzmq       | 4.2.0         | NO       | `libzmq3-dev`        | `zeromq`     | `zeromq-devel`     | `zeromq-devel`      | NO       | ZeroMQ library  |
 | libunbound   | 1.4.16        | NO       | `libunbound-dev`     | `unbound`    | `unbound-devel`    | `unbound-devel`     | NO       | DNS resolver    |
 | libsodium    | ?             | NO       | `libsodium-dev`      | `libsodium`  | `libsodium-devel`  | `libsodium-devel`   | NO       | cryptography    |
@@ -566,21 +566,15 @@ Packages are available for
 * Docker
 
     ```bash
-    # Build using all available cores
-    docker build -t monero .
+    # Build image
+    docker build -t monerod .
 
-    # or build using a specific number of cores (reduce RAM requirement)
-    docker build --build-arg NPROC=1 -t monero .
+    # Create a directory on the host for the blockchain
+    mkdir -p /path/to/bitmonero
 
-    # either run in foreground
-    docker run -it -v /monero/chain:/home/monero/.bitmonero -v /monero/wallet:/wallet -p 18080:18080 monero
-
-    # or in background
-    docker run -it -d -v /monero/chain:/home/monero/.bitmonero -v /monero/wallet:/wallet -p 18080:18080 monero
+    # Run it
+    docker run -d --user $(id -u):$(id -g) -v /path/to/bitmonero:/.bitmonero -p 18080:18080 -p 18081:18081 monerod
     ```
-
-  * The build needs 3 GB space.
-  * Wait one hour or more
 
 Packaging for your favorite distribution would be a welcome contribution!
 

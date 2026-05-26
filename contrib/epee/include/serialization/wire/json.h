@@ -1,6 +1,4 @@
-// Copyright (c) 2018-2024, The Monero Project
-
-//
+// Copyright (c) 2021, The Monero Project
 // All rights reserved.
 //
 // Redistribution and use in source and binary forms, with or without modification, are
@@ -29,45 +27,30 @@
 
 #pragma once
 
-#include <system_error>
-#include <type_traits>
+#include <string>
+#include "serialization/wire/json/base.h"
+#include "serialization/wire/json/fwd.h"
+#include "serialization/wire/json/write.h"
+#include "serialization/wire/write.h"
+#include "span.h"
 
-namespace net
-{
-    //! General net errors
-    enum class error : int
-    {
-        // 0 reserved for success (as per expect<T>)
-        bogus_dnssec = 1,   //!< Invalid response signature from DNSSEC enabled domain
-        dns_query_failure,  //!< Failed to retrieve desired DNS record
-        expected_tld,       //!< Expected a tld
-        invalid_encoding,   //!< Invalid percent encoding
-        invalid_host,       //!< Hostname is not valid
-        invalid_i2p_address,
-        invalid_mask,       //!< Outside of 0-32 range
-        invalid_port,       //!< Outside of 0-65535 range
-        invalid_scheme,     //!< Provided URI scheme was unspported
-        invalid_tor_address,//!< Invalid base32 or length
-        legacy_tor_address, //!< Legacy address type; not supported
-        unexpected_userinfo,//!< User or pass was provided unexpectedly
-        unsupported_address,//!< Type not supported by `get_network_address`
+//! Define functions that list fields in `type` (calls de-virtualized)
+#define WIRE_JSON_DEFINE_OBJECT(type, map)                              \
+  void read_bytes(::wire::json_reader& source, type& dest)              \
+  { map(source, dest); }                                                \
+                                                                        \
+  void write_bytes(::wire::json_writer& dest, const type& source)       \
+  { map(dest, source); }
 
-    };
+//! Define functions that convert `type` to/from json bytes
+#define WIRE_JSON_DEFINE_CONVERSION(type)                               \
+  std::error_code convert_from_json(const ::epee::span<const char> source, type& dest) \
+  { return ::wire_read::from_bytes<::wire::json_reader>(source, dest); } \
+                                                                        \
+  std::error_code convert_to_json(std::string& dest, const type& source) \
+  { return ::wire_write::to_bytes<::wire::json_string_writer>(dest, source); }
 
-    //! \return `std::error_category` for `net` namespace.
-    std::error_category const& error_category() noexcept;
-
-    //! \return `net::error` as a `std::error_code` value.
-    inline std::error_code make_error_code(error value) noexcept
-    {
-        return std::error_code{int(value), error_category()};
-    }
-}
-
-namespace std
-{
-    template<>
-    struct is_error_code_enum<::net::error>
-      : true_type
-    {};
-}
+//! Define functions that convert `type::request` and `type::response` to/from json bytes
+#define WIRE_JSON_DEFINE_COMMAND(type)          \
+  WIRE_JSON_DEFINE_CONVERSION(type::request)    \
+  WIRE_JSON_DEFINE_CONVERSION(type::response)
