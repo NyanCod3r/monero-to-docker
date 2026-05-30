@@ -38,14 +38,15 @@ jobs:
 
       - name: Merge Upstream Master
         run: |
+          # Save our Dockerfile before the merge so upstream can never overwrite it
+          cp Dockerfile /tmp/Dockerfile.ours
+
           git merge upstream/master --no-edit -X ours || true
 
-          # 1. Dockerfile: keep ours
-          if git diff --name-only --diff-filter=U | grep -q "^Dockerfile$"; then
-            echo "Resolving Dockerfile conflict: keeping ours"
-            git checkout --ours Dockerfile
-            git add Dockerfile
-          fi
+          # 1. Dockerfile: always restore ours unconditionally (handles both conflict
+          #    markers and silent auto-merges where upstream prepended new content)
+          cp /tmp/Dockerfile.ours Dockerfile
+          git add Dockerfile
 
           # 2. Unwanted upstream workflows: remove them
           for workflow in build.yml guix.yml depends.yml gitian.yml; do
