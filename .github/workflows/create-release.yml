@@ -45,10 +45,18 @@ jobs:
             RELEASE_BODY=$(echo "$release_data" | jq -r '.body')
           fi
 
-          echo "Creating release '$RELEASE_TITLE' for tag '$TAG_NAME'"
+          # Only mark as latest if this is the highest version tag
+          HIGHEST_TAG=$(git tag -l 'v*' --sort=-v:refname | head -1)
+          if [ "$TAG_NAME" = "$HIGHEST_TAG" ]; then
+            MAKE_LATEST="true"
+          else
+            MAKE_LATEST="false"
+          fi
 
-          # Create a new release in this repository
+          echo "Creating release '$RELEASE_TITLE' for tag '$TAG_NAME' (make-latest: $MAKE_LATEST)"
+
           gh release create "$TAG_NAME" \
             --repo "${{ github.repository }}" \
             --title "$RELEASE_TITLE" \
-            --notes "$RELEASE_BODY"
+            --notes "$RELEASE_BODY" \
+            --make-latest "$MAKE_LATEST"

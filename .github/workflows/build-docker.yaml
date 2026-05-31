@@ -42,10 +42,18 @@ jobs:
           # 3. Restore the Dockerfile
           cp /tmp/Dockerfile.saved Dockerfile
           
-          # Export TAG_NAME for next steps
+          # Determine if this tag is the highest version — only that one gets :latest
+          HIGHEST_TAG=$(git tag -l 'v*' --sort=-v:refname | head -1)
+          if [ "$TAG_NAME" = "$HIGHEST_TAG" ]; then
+            DOCKER_TAGS="nyancod3r/monero_cli:${TAG_NAME},nyancod3r/monero_cli:latest"
+          else
+            DOCKER_TAGS="nyancod3r/monero_cli:${TAG_NAME}"
+          fi
+
           echo "TAG_NAME=$TAG_NAME" >> $GITHUB_ENV
-          
-          echo "Checked out $TAG_NAME and restored custom Dockerfile"
+          echo "DOCKER_TAGS=$DOCKER_TAGS" >> $GITHUB_ENV
+
+          echo "Building tag: $TAG_NAME (highest: $HIGHEST_TAG, docker tags: $DOCKER_TAGS)"
           ls -la Dockerfile
 
       - name: Login to Docker Hub
@@ -58,9 +66,9 @@ jobs:
         uses: docker/build-push-action@v2
         with:
           context: .
-          file: ./Dockerfile  # Ensure the correct Dockerfile is used
+          file: ./Dockerfile
           push: true
-          tags: nyancod3r/monero_cli:${{ env.TAG_NAME }},nyancod3r/monero_cli:latest,nyancod3r/monero_cli:${{ github.sha }}
+          tags: ${{ env.DOCKER_TAGS }}
 
       - name: Extract Hash from Logs
         run: |
