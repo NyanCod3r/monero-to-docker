@@ -41,8 +41,11 @@ jobs:
             RELEASE_TITLE="$TAG_NAME"
             RELEASE_BODY="Release for version $TAG_NAME."
           else
-            RELEASE_TITLE=$(echo "$release_data" | jq -r '.name')
-            RELEASE_BODY=$(echo "$release_data" | jq -r '.body')
+            RELEASE_TITLE=$(echo "$release_data" | jq -r '.name // empty')
+            RELEASE_BODY=$(echo "$release_data" | jq -r '.body // empty')
+            # Fall back to defaults if upstream fields are null/empty
+            [ -z "$RELEASE_TITLE" ] && RELEASE_TITLE="$TAG_NAME"
+            [ -z "$RELEASE_BODY" ] && RELEASE_BODY="Release for version $TAG_NAME."
           fi
 
           # Only mark as latest if this is the highest version tag
@@ -55,8 +58,13 @@ jobs:
 
           echo "Creating release '$RELEASE_TITLE' for tag '$TAG_NAME' (make-latest: $MAKE_LATEST)"
 
+          LATEST_FLAG="--latest"
+          if [ "$MAKE_LATEST" = "false" ]; then
+            LATEST_FLAG="--latest=false"
+          fi
+
           gh release create "$TAG_NAME" \
             --repo "${{ github.repository }}" \
             --title "$RELEASE_TITLE" \
             --notes "$RELEASE_BODY" \
-            --make-latest "$MAKE_LATEST"
+            $LATEST_FLAG
