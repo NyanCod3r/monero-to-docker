@@ -8876,45 +8876,6 @@ bool wallet2::find_and_save_rings(bool force)
   return true;
 }
 
-bool wallet2::blackball_output(const std::pair<uint64_t, uint64_t> &output)
-{
-  if (!m_ringdb)
-    return false;
-  try { return m_ringdb->blackball(output); }
-  catch (const std::exception &e) { return false; }
-}
-
-bool wallet2::set_blackballed_outputs(const std::vector<std::pair<uint64_t, uint64_t>> &outputs, bool add)
-{
-  if (!m_ringdb)
-    return false;
-  try
-  {
-    bool ret = true;
-    if (!add)
-      ret &= m_ringdb->clear_blackballs();
-    ret &= m_ringdb->blackball(outputs);
-    return ret;
-  }
-  catch (const std::exception &e) { return false; }
-}
-
-bool wallet2::unblackball_output(const std::pair<uint64_t, uint64_t> &output)
-{
-  if (!m_ringdb)
-    return false;
-  try { return m_ringdb->unblackball(output); }
-  catch (const std::exception &e) { return false; }
-}
-
-bool wallet2::is_output_blackballed(const std::pair<uint64_t, uint64_t> &output) const
-{
-  if (!m_ringdb)
-    return false;
-  try { return m_ringdb->blackballed(output); }
-  catch (const std::exception &e) { return false; }
-}
-
 bool wallet2::lock_keys_file()
 {
   if (m_wallet_file.empty())
@@ -8999,8 +8960,6 @@ bool wallet2::tx_add_fake_output(std::vector<std::vector<tools::wallet2::get_out
     return false;
   }
   valid_public_keys_cache.insert(rct::rct2pk(mask));
-//  if (is_output_blackballed(output_public_key)) // don't add blackballed outputs
-//    return false;
   outs.back().push_back(item);
   return true;
 }
@@ -9390,24 +9349,13 @@ void wallet2::get_outs(std::vector<std::vector<tools::wallet2::get_outs_entry>> 
         std::unordered_map<const char*, std::set<uint64_t>> picks;
 
         // while we still need more mixins
-        uint64_t num_usable_outs = num_outs;
-        bool allow_blackballed = false;
-        MDEBUG("Starting gamma picking with " << num_outs << ", num_usable_outs " << num_usable_outs
+        MDEBUG("Starting gamma picking with " << num_outs
             << ", requested_outputs_count " << requested_outputs_count);
         while (num_found < requested_outputs_count)
         {
           // if we've gone through every possible output, we've gotten all we can
-          if (seen_indices.size() == num_usable_outs)
-          {
-            // there is a first pass which rejects blackballed outputs, then a second pass
-            // which allows them if we don't have enough non blackballed outputs to reach
-            // the required amount of outputs (since consensus does not care about blackballed
-            // outputs, we still need to reach the minimum ring size)
-            if (allow_blackballed)
-              break;
-            MINFO("Not enough output not marked as spent, we'll allow outputs marked as spent");
-            allow_blackballed = true;
-            num_usable_outs = num_outs;
+          if (seen_indices.size() == num_outs) {
+            break;
           }
 
           // get a random output index from the DB.  If we've already seen it,
@@ -9483,11 +9431,6 @@ void wallet2::get_outs(std::vector<std::vector<tools::wallet2::get_outs_entry>> 
 
           if (seen_indices.count(i))
             continue;
-          if (!allow_blackballed && is_output_blackballed(std::make_pair(amount, i))) // don't add blackballed outputs
-          {
-            --num_usable_outs;
-            continue;
-          }
           seen_indices.emplace(i);
 
           picks[type].insert(i);
@@ -13226,8 +13169,9 @@ uint64_t wallet2::import_key_images(const std::string &filename, uint64_t &spent
   const size_t headerlen = 4 + 2 * sizeof(crypto::public_key);
   THROW_WALLET_EXCEPTION_IF(data.size() < headerlen, error::wallet_internal_error, std::string("Bad data size from file ") + filename);
   const uint32_t offset = (uint8_t)data[0] | (((uint8_t)data[1]) << 8) | (((uint8_t)data[2]) << 16) | (((uint8_t)data[3]) << 24);
-  const crypto::public_key &public_spend_key = *(const crypto::public_key*)&data[4];
-  const crypto::public_key &public_view_key = *(const crypto::public_key*)&data[4 + sizeof(crypto::public_key)];
+  crypto::public_key public_spend_key, public_view_key;
+  memcpy(&public_spend_key, &data[4], sizeof(public_spend_key));
+  memcpy(&public_view_key, &data[4 + sizeof(crypto::public_key)], sizeof(public_view_key));
   const cryptonote::account_public_address &keys = get_account().get_keys().m_account_address;
   if (public_spend_key != keys.m_spend_public_key || public_view_key != keys.m_view_public_key)
   {
@@ -13244,8 +13188,10 @@ uint64_t wallet2::import_key_images(const std::string &filename, uint64_t &spent
   ski.reserve(nki);
   for (size_t n = 0; n < nki; ++n)
   {
-    crypto::key_image key_image = *reinterpret_cast<const crypto::key_image*>(&data[headerlen + n * record_size]);
-    crypto::signature signature = *reinterpret_cast<const crypto::signature*>(&data[headerlen + n * record_size + sizeof(crypto::key_image)]);
+    crypto::key_image key_image;
+    crypto::signature signature;
+    memcpy(&key_image, &data[headerlen + n * record_size], sizeof(key_image));
+    memcpy(&signature, &data[headerlen + n * record_size + sizeof(crypto::key_image)], sizeof(signature));
 
     ski.push_back(std::make_pair(key_image, signature));
   }
@@ -14312,8 +14258,9 @@ size_t wallet2::import_outputs_from_str(const std::string &outputs_st)
   {
     THROW_WALLET_EXCEPTION(error::wallet_internal_error, std::string("Bad data size for outputs"));
   }
-  const crypto::public_key &public_spend_key = *(const crypto::public_key*)&data[0];
-  const crypto::public_key &public_view_key = *(const crypto::public_key*)&data[sizeof(crypto::public_key)];
+  crypto::public_key public_spend_key, public_view_key;
+  memcpy(&public_spend_key, &data[0], sizeof(public_spend_key));
+  memcpy(&public_view_key, &data[sizeof(crypto::public_key)], sizeof(public_view_key));
   const cryptonote::account_public_address &keys = get_account().get_keys().m_account_address;
   if (public_spend_key != keys.m_spend_public_key || public_view_key != keys.m_view_public_key)
   {
@@ -14658,9 +14605,10 @@ size_t wallet2::import_multisig(std::vector<cryptonote::blobdata> blobs, bool re
     const size_t headerlen = 3 * sizeof(crypto::public_key);
     THROW_WALLET_EXCEPTION_IF(data.size() < headerlen, error::wallet_internal_error, "Bad data size");
 
-    const crypto::public_key &public_spend_key = *(const crypto::public_key*)&data[0];
-    const crypto::public_key &public_view_key = *(const crypto::public_key*)&data[sizeof(crypto::public_key)];
-    const crypto::public_key &signer = *(const crypto::public_key*)&data[2*sizeof(crypto::public_key)];
+    crypto::public_key public_spend_key, public_view_key, signer;
+    memcpy(&public_spend_key, &data[0], sizeof(public_spend_key));
+    memcpy(&public_view_key, &data[sizeof(crypto::public_key)], sizeof(public_view_key));
+    memcpy(&signer, &data[2*sizeof(crypto::public_key)], sizeof(signer));
     const cryptonote::account_public_address &keys = get_account().get_keys().m_account_address;
     THROW_WALLET_EXCEPTION_IF(public_spend_key != keys.m_spend_public_key || public_view_key != keys.m_view_public_key,
         error::wallet_internal_error, "Multisig info is for a different account");
