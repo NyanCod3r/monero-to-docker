@@ -3363,11 +3363,14 @@ void wallet2::process_parsed_blocks(const uint64_t start_height, const std::vect
     {
       THROW_WALLET_EXCEPTION_IF(txidx >= tx_cache_data.size(), error::wallet_internal_error, "txidx out of range");
       const cryptonote::transaction& tx = parsed_blocks[i].block.miner_tx;
-      const size_t n_vouts = (m_refresh_type == RefreshType::RefreshOptimizeCoinbase && tx.version < 2) ? 1 : tx.vout.size();
-      if (parsed_blocks[i].block.major_version >= hf_version_view_tags)
-        geniods.push_back(geniod_params{ tx, n_vouts, txidx });
-      else
-        tpool.submit(&waiter, [&, n_vouts, txidx](){ geniod(tx, n_vouts, txidx); }, true);
+      const size_t n_vouts = (m_refresh_type == RefreshType::RefreshOptimizeCoinbase && tx.version < 2 && !tx.vout.empty()) ? 1 : tx.vout.size();
+      if (n_vouts > 0)
+      {
+        if (parsed_blocks[i].block.major_version >= hf_version_view_tags)
+          geniods.push_back(geniod_params{ tx, n_vouts, txidx });
+        else
+          tpool.submit(&waiter, [&, n_vouts, txidx](){ geniod(tx, n_vouts, txidx); }, true);
+      }
     }
     ++txidx;
     for (size_t j = 0; j < parsed_blocks[i].txes.size(); ++j)
@@ -9056,6 +9059,8 @@ void wallet2::get_outs(std::vector<std::vector<tools::wallet2::get_outs_entry>> 
       // check we're clear enough of rct start, to avoid corner cases below
       THROW_WALLET_EXCEPTION_IF(rct_offsets.size() < std::max<size_t>(1, CRYPTONOTE_DEFAULT_TX_SPENDABLE_AGE),
           error::get_output_distribution, "Not enough rct outputs");
+      THROW_WALLET_EXCEPTION_IF(!std::is_sorted(rct_offsets.begin(), rct_offsets.end()),
+          error::get_output_distribution, "Daemon reports non-monotonic rct output distribution");
       THROW_WALLET_EXCEPTION_IF(rct_offsets.back() <= max_rct_index,
           error::get_output_distribution, "Daemon reports suspicious number of rct outputs");
     }
