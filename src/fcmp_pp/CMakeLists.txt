@@ -27,9 +27,13 @@
 # THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 set(fcmp_pp_sources
-  fcmp_pp_crypto.cpp)
+  curve_trees.cpp
+  fcmp_pp_crypto.cpp
+  fcmp_pp_types.cpp)
 
 monero_find_all_headers(fcmp_pp_headers "${CMAKE_CURRENT_SOURCE_DIR}")
+
+add_subdirectory(fcmp_pp_rust)
 
 monero_add_library(fcmp_pp
   ${fcmp_pp_sources}
