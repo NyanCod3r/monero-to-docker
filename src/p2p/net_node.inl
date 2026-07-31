@@ -38,6 +38,7 @@
 #include <boost/thread/thread.hpp>
 #include <boost/uuid/uuid_io.hpp>
 #include <boost/algorithm/string.hpp>
+#include <array>
 #include <atomic>
 #include <functional>
 #include <limits>
@@ -66,6 +67,81 @@
 
 namespace nodetool
 {
+  namespace
+  {
+    uint64_t ipv4_subnet_size(const uint8_t mask)
+    {
+      CHECK_AND_ASSERT_THROW_MES(mask <= 32, "invalid IPv4 subnet mask");
+      return mask == 0 ? (uint64_t{1} << 32) : (uint64_t{1} << (32 - mask));
+    }
+
+    uint64_t ipv4_subnet_first(const epee::net_utils::ipv4_network_subnet &subnet)
+    {
+      return SWAP32BE(subnet.subnet());
+    }
+
+    uint64_t ipv4_subnet_last(const epee::net_utils::ipv4_network_subnet &subnet)
+    {
+      return ipv4_subnet_first(subnet) + ipv4_subnet_size(subnet.mask()) - 1;
+    }
+
+    epee::net_utils::ipv4_network_subnet make_ipv4_subnet(const uint64_t first, const uint8_t mask)
+    {
+      return {SWAP32BE(static_cast<uint32_t>(first)), mask};
+    }
+
+    void subtract_ipv4_subnet(
+      const epee::net_utils::ipv4_network_subnet &blocked,
+      const epee::net_utils::ipv4_network_subnet &removed,
+      std::vector<epee::net_utils::ipv4_network_subnet> &result)
+    {
+      const uint64_t blocked_first = ipv4_subnet_first(blocked);
+      const uint64_t blocked_last = ipv4_subnet_last(blocked);
+      const uint64_t removed_first = ipv4_subnet_first(removed);
+      const uint64_t removed_last = ipv4_subnet_last(removed);
+
+      if (removed_last < blocked_first || blocked_last < removed_first)
+      {
+        result.push_back(blocked);
+        return;
+      }
+      if (removed_first <= blocked_first && blocked_last <= removed_last)
+        return;
+
+      const uint8_t child_mask = blocked.mask() + 1;
+      CHECK_AND_ASSERT_THROW_MES(child_mask <= 32, "invalid IPv4 subnet split");
+
+      const uint64_t child_size = ipv4_subnet_size(child_mask);
+      subtract_ipv4_subnet(make_ipv4_subnet(blocked_first, child_mask), removed, result);
+      subtract_ipv4_subnet(make_ipv4_subnet(blocked_first + child_size, child_mask), removed, result);
+    }
+
+    void emplace_blocked_subnet(
+      std::map<epee::net_utils::ipv4_network_subnet, time_t> &subnets,
+      const epee::net_utils::ipv4_network_subnet &subnet,
+      const time_t limit)
+    {
+      auto entry = subnets.find(subnet);
+      if (entry == subnets.end() || entry->second < limit)
+        subnets[subnet] = limit;
+    }
+  }
+
+  using ipv6_peer_group = std::array<unsigned char, 4>;
+
+  inline boost::optional<ipv6_peer_group> get_ipv6_peer_group(const epee::net_utils::network_address& address)
+  {
+    if (address.get_type_id() != epee::net_utils::ipv6_network_address::get_type_id())
+      return boost::none;
+
+    const boost::asio::ip::address_v6 ip = address.as<const epee::net_utils::ipv6_network_address>().ip();
+    if (ip.is_v4_mapped())
+      return boost::none;
+
+    const boost::asio::ip::address_v6::bytes_type bytes = ip.to_bytes();
+    return ipv6_peer_group{{bytes[0], bytes[1], bytes[2], bytes[3]}};
+  }
+  //-----------------------------------------------------------------------------------
   template<class t_payload_net_handler>
   node_server<t_payload_net_handler>::~node_server()
   {
@@ -379,11 +455,38 @@ namespace nodetool
   bool node_server<t_payload_net_handler>::unblock_subnet(const epee::net_utils::ipv4_network_subnet &subnet)
   {
     CRITICAL_REGION_LOCAL(m_blocked_hosts_lock);
-    auto i = m_blocked_subnets.find(subnet);
-    if (i == m_blocked_subnets.end())
+    bool unblocked = false;
+
+    for (auto i = m_blocked_hosts.begin(); i != m_blocked_hosts.end(); )
+    {
+      auto address = net::get_network_address(i->first, 0);
+      if (address && address->get_type_id() == epee::net_utils::ipv4_network_address::get_type_id()
+        && subnet.matches(address->template as<epee::net_utils::ipv4_network_address>()))
+      {
+        i = m_blocked_hosts.erase(i);
+        unblocked = true;
+      }
+      else
+        ++i;
+    }
+
+    std::map<epee::net_utils::ipv4_network_subnet, time_t> blocked_subnets;
+    std::vector<epee::net_utils::ipv4_network_subnet> remaining;
+    remaining.reserve(32);
+    for (const auto &blocked_subnet : m_blocked_subnets)
+    {
+      remaining.clear();
+      subtract_ipv4_subnet(blocked_subnet.first, subnet, remaining);
+      if (remaining.size() != 1 || remaining.front() != blocked_subnet.first)
+        unblocked = true;
+      for (const auto &entry : remaining)
+        emplace_blocked_subnet(blocked_subnets, entry, blocked_subnet.second);
+    }
+
+    if (!unblocked)
       return false;
-    m_blocked_subnets.erase(i);
-    MCLOG_CYAN(el::Level::Info, "global", "Subnet " << subnet.host_str() << " unblocked.");
+    m_blocked_subnets.swap(blocked_subnets);
+    MCLOG_CYAN(el::Level::Info, "global", "Subnet " << subnet.str() << " unblocked.");
     return true;
   }
   //-----------------------------------------------------------------------------------
@@ -1600,9 +1703,10 @@ namespace nodetool
 
       const uint32_t next_needed_pruning_stripe = m_payload_handler.get_next_needed_pruning_stripe().second;
 
-      // Build a list of all distinct /24 subnets we are connected to now right now; to catch
+      // Build a list of all distinct IPv4 /24 and IPv6 /32 groups we are connected to right now; to catch
       // any connection changes, re-build the list for every outer try loop pass
       std::set<uint32_t> connected_subnets;
+      std::set<ipv6_peer_group> connected_ipv6_groups;
       const uint32_t subnet_mask = ntohl(0xffffff00);
       const bool is_public_zone = &zone == &m_network_zones.at(epee::net_utils::zone::public_);
       if (is_public_zone)
@@ -1625,6 +1729,12 @@ namespace nodetool
               uint32_t actual_ipv4;
               memcpy(&actual_ipv4, v4ip.to_bytes().data(), sizeof(actual_ipv4));
               connected_subnets.insert(actual_ipv4 & subnet_mask);
+            }
+            else
+            {
+              const boost::optional<ipv6_peer_group> group = get_ipv6_peer_group(na);
+              if (group)
+                connected_ipv6_groups.insert(*group);
             }
           }
           return true;
@@ -1655,8 +1765,9 @@ namespace nodetool
           std::shuffle(shuffled_indexes.begin(), shuffled_indexes.end(), crypto::random_device{});
 
           // Step 2: Deduplicate by only taking 1 candidate from each /24 subnet that occurs, the FIRST
-          // candidate seen from each subnet within the now random order
+          // candidate seen from each subnet within the now random order. Native IPv6 peers use /32 groups.
           std::set<uint32_t> subnets = connected_subnets;
+          std::set<ipv6_peer_group> ipv6_groups = connected_ipv6_groups;
           for (size_t index : shuffled_indexes)
           {
             const peerlist_entry &peer = peers.at(index);
@@ -1685,7 +1796,12 @@ namespace nodetool
                 if (take)
                   subnets.insert(subnet);
               }
-              // else 'take' stays true, we will take an IPv6 address that is not V4 mapped
+              else
+              {
+                const boost::optional<ipv6_peer_group> group = get_ipv6_peer_group(na);
+                if (group)
+                  take = ipv6_groups.insert(*group).second;
+              }
             }
             if (take)
               subnet_peers.push_back(peer);
