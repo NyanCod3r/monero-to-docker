@@ -39,12 +39,10 @@
 #include <boost/bind.hpp>
 
 #include <locale.h>
-#include <thread>
 #include <iostream>
 #include <sstream>
 #include <fstream>
 #include <string_view>
-#include <ctype.h>
 #include <boost/lexical_cast.hpp>
 #include <boost/program_options.hpp>
 #include <boost/algorithm/string.hpp>
@@ -54,22 +52,14 @@
 #include <boost/filesystem.hpp>
 #include "include_base_utils.h"
 #include "console_handler.h"
-#include "common/i18n.h"
 #include "common/command_line.h"
 #include "common/util.h"
-#include "common/dns_utils.h"
-#include "common/base58.h"
 #include "common/scoped_message_writer.h"
-#include "cryptonote_protocol/cryptonote_protocol_handler.h"
 #include "simplewallet.h"
 #include "cryptonote_basic/cryptonote_format_utils.h"
 #include "storages/http_abstract_invoke.h"
 #include "rpc/core_rpc_server_commands_defs.h"
-#include "crypto/crypto.h"  // for crypto::secret_key definition
 #include "mnemonics/electrum-words.h"
-#include "rapidjson/document.h"
-#include "common/json_util.h"
-#include "ringct/rctSigs.h"
 #include "multisig/multisig.h"
 #include "wallet/wallet_args.h"
 #include "wallet/fee_priority.h"
@@ -80,7 +70,6 @@
 
 #ifdef WIN32
 #include <boost/locale.hpp>
-#include <boost/filesystem.hpp>
 #include <fcntl.h>
 #endif
 
@@ -829,13 +818,16 @@ bool simple_wallet::viewkey(const std::vector<std::string> &args/* = std::vector
 {
   // don't log
   PAUSE_READLINE();
-  if (m_wallet->key_on_device()) {
-    std::cout << "secret: On device. Not available" << std::endl;
-  } else {
-    SCOPED_WALLET_UNLOCK();
+  SCOPED_WALLET_UNLOCK();
+  crypto::secret_key viewkey = m_wallet->get_account().get_keys().m_view_secret_key;
+  bool available = viewkey != crypto::null_skey;
+  if (!available && m_wallet->key_on_device()) available = m_wallet->get_account().get_device().get_cached_view_key(viewkey);
+  if (available) {
     printf("secret: ");
-    print_secret_key(m_wallet->get_account().get_keys().m_view_secret_key);
+    print_secret_key(viewkey);
     putchar('\n');
+  } else {
+    std::cout << "secret: On device. Not available" << std::endl;
   }
   std::cout << "public: " << string_tools::pod_to_hex(m_wallet->get_account().get_keys().m_account_address.m_view_public_key) << std::endl;
 
@@ -6275,6 +6267,17 @@ void simple_wallet::check_for_inactivity_lock(bool user)
           }
           break;
         }
+      }
+      catch (const std::exception &e)
+      {
+        // Report why unlocking failed, rather than just looping back to the password prompt
+        auto writer = fail_msg_writer();
+        if (show_wallet_name)
+          writer << tr("Failed to unlock wallet: ") << e.what();
+        else
+          writer << tr("Failed to unlock wallet.");
+        if (m_wallet->key_on_device())
+          writer << "\n" << tr("Please ensure the HW wallet is connected and unlocked.");
       }
       catch (...) { /* do nothing, just let the loop loop */ }
     }
