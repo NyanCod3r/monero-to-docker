@@ -1154,6 +1154,7 @@ bool simple_wallet::make_multisig_main(const std::vector<std::string> &args, boo
     fail_msg_writer() << tr("wallet is watch-only and cannot be made multisig");
     return false;
   }
+  CHECK_IF_BACKGROUND_SYNCING("cannot be made multisig");
 
   if(m_wallet->get_num_transfer_details())
   {
@@ -1262,6 +1263,8 @@ bool simple_wallet::exchange_multisig_keys_main(const std::vector<std::string> &
       fail_msg_writer() << tr("Your original password was incorrect.");
       return false;
     }
+
+    LOCK_IDLE_SCOPE();
 
     try
     {
@@ -4559,8 +4562,9 @@ bool simple_wallet::try_connect_to_daemon(bool silent, uint32_t* version)
           "Please make sure the daemon is running the latest version or change the daemon address using the 'set_daemon' command.");
       else
         fail_msg_writer() << tr("wallet failed to connect to daemon: ") << m_wallet->get_daemon_address() << ". " <<
-          tr("Daemon either is not started or wrong port was passed. "
-          "Please make sure daemon is running or change the daemon address using the 'set_daemon' command.");
+          boost::format(tr("Daemon either is not started or the wrong port was passed. "
+          "Please make sure a %sdaemon is running or change the daemon address using the 'set_daemon' command."))
+            % (m_wallet->nettype() == TESTNET ? "testnet " : m_wallet->nettype() == STAGENET ? "stagenet " : "");
     }
     return false;
   }
