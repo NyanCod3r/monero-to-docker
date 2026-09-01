@@ -5629,6 +5629,7 @@ bool simple_wallet::refresh_main(uint64_t start_height, enum ResetType reset, bo
   uint64_t fetched_blocks = 0;
   bool received_money = false;
   bool ok = false;
+  bool suggest_hw_reconnect = false;
   std::ostringstream ss;
   try
   {
@@ -5690,6 +5691,7 @@ bool simple_wallet::refresh_main(uint64_t start_height, enum ResetType reset, bo
   {
     LOG_ERROR("unexpected error: " << e.what());
     ss << tr("unexpected error: ") << e.what();
+    suggest_hw_reconnect = true;
   }
   catch (...)
   {
@@ -5699,7 +5701,10 @@ bool simple_wallet::refresh_main(uint64_t start_height, enum ResetType reset, bo
 
   if (!ok)
   {
-    fail_msg_writer() << tr("refresh failed: ") << ss.str() << ". " << tr("Blocks received: ") << fetched_blocks;
+    auto writer = fail_msg_writer();
+    writer << tr("refresh failed: ") << ss.str() << ". " << tr("Blocks received: ") << fetched_blocks;
+    if (suggest_hw_reconnect && m_wallet->key_on_device())
+      writer << "\n" << tr("Check that the HW wallet is connected and unlocked, then run 'hw_reconnect' before refreshing again.");
   }
 
   // prevent it from triggering the idle screen due to waiting for a foreground refresh
@@ -6993,6 +6998,13 @@ bool simple_wallet::sweep_main(uint32_t account, uint64_t below, const std::vect
     }
     if (payment_id_seen)
       local_args.pop_back();
+  }
+
+  if (local_args.empty())
+  {
+    fail_msg_writer() << tr("No address given");
+    print_usage();
+    return true;
   }
 
   cryptonote::address_parse_info info;

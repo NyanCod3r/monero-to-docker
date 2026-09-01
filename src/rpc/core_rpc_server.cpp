@@ -1365,14 +1365,10 @@ namespace cryptonote
   {
     RPC_TRACKER(get_transaction_pool);
 
-    const bool restricted = m_restricted && ctx;
-    const bool request_has_rpc_origin = ctx != NULL;
-    const bool allow_sensitive = !request_has_rpc_origin || !restricted;
-
-    size_t n_txes = m_core.get_pool_transactions_count(allow_sensitive);
+    size_t n_txes = m_core.get_pool_transactions_count(true);
     if (n_txes > 0)
     {
-      m_core.get_pool_transactions_and_spent_keys_info(res.transactions, res.spent_key_images, allow_sensitive);
+      m_core.get_pool_transactions_and_spent_keys_info(res.transactions, res.spent_key_images);
       for (tx_info& txi : res.transactions)
         txi.tx_blob = epee::string_tools::buff_to_hex_nodelimer(txi.tx_blob);
     }
@@ -1784,9 +1780,10 @@ namespace cryptonote
     const uint32_t max_nonce = restricted ? 16384 : 65535;
     bool collision = true;
     std::vector<uint32_t> slots(aux_pow.size());
+    std::vector<bool> slot_seen(aux_pow.size(), false);
     for (nonce = 0; nonce <= max_nonce; ++nonce)
     {
-      std::vector<bool> slot_seen(aux_pow.size(), false);
+      slot_seen.assign(aux_pow.size(), false);
       collision = false;
       for (size_t idx = 0; idx < aux_pow.size(); ++idx)
         slots[idx] = 0xffffffff;
