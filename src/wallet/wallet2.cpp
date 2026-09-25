@@ -1772,6 +1772,7 @@ wallet2::tx_entry_data wallet2::get_tx_entries(const std::unordered_set<crypto::
     req.prune = true;
 
     size_t ntxes = slice + SLICE_SIZE > txids.size() ? txids.size() - slice : SLICE_SIZE;
+    const auto expected_txid_begin = it;
     for (size_t i = slice; i < slice + ntxes; ++i)
     {
       req.txs_hashes.push_back(epee::string_tools::pod_to_hex(*it));
@@ -1785,6 +1786,7 @@ wallet2::tx_entry_data wallet2::get_tx_entries(const std::unordered_set<crypto::
       THROW_WALLET_EXCEPTION_IF(res.txs.size() != req.txs_hashes.size(), error::wallet_internal_error, "Failed to get transaction from daemon");
     }
 
+    auto expected_txid = expected_txid_begin;
     for (auto& tx_info : res.txs)
     {
       if (!tx_info.in_pool)
@@ -1796,6 +1798,8 @@ wallet2::tx_entry_data wallet2::get_tx_entries(const std::unordered_set<crypto::
       cryptonote::transaction tx;
       crypto::hash tx_hash;
       THROW_WALLET_EXCEPTION_IF(!get_pruned_tx(tx_info, tx, tx_hash), error::wallet_internal_error, "Failed to get transaction from daemon");
+      THROW_WALLET_EXCEPTION_IF(tx_hash != *expected_txid, error::wallet_internal_error, "Failed to get the right transaction from daemon");
+      ++expected_txid;
       tx_entries.tx_entries.emplace_back(process_tx_entry_t{ std::move(tx_info), std::move(tx), std::move(tx_hash) });
     }
   }
@@ -13138,6 +13142,10 @@ void wallet2::set_account_tag(const std::set<uint32_t> &account_indices, const s
   for (uint32_t account_index : account_indices)
   {
     THROW_WALLET_EXCEPTION_IF(account_index >= get_num_subaddress_accounts(), error::wallet_internal_error, "Account index out of bound");
+  }
+
+  for (uint32_t account_index : account_indices)
+  {
     if (m_account_tags.second[account_index] == tag)
       MDEBUG("This tag is already assigned to this account");
     else
@@ -14933,6 +14941,11 @@ size_t wallet2::import_multisig(std::vector<cryptonote::blobdata> blobs, bool re
   // parse and validate locally so failures preserve any pending rescan state
   std::vector<std::vector<tools::wallet2::multisig_info>> info;
   std::unordered_set<crypto::public_key> seen;
+
+  const size_t expected_n_partial_key_images = get_account().get_multisig_keys().size();
+  const size_t expected_n_lr = tools::combinations_count(m_multisig_signers.size() - m_multisig_threshold, m_multisig_signers.size() - 1)
+    * multisig::signing::kAlphaComponents;
+
   for (cryptonote::blobdata &data: blobs)
   {
     const size_t magiclen = strlen(MULTISIG_EXPORT_FILE_MAGIC);
@@ -14979,6 +14992,13 @@ size_t wallet2::import_multisig(std::vector<cryptonote::blobdata> blobs, bool re
 
     for (const auto &e: i)
     {
+      CHECK_AND_ASSERT_THROW_MES(e.m_signer == signer, "Multisig info body signer does not match header signer");
+
+      CHECK_AND_ASSERT_THROW_MES(e.m_partial_key_images.size() == expected_n_partial_key_images,
+        "Multisig info has an unexpected number of partial key images");
+      CHECK_AND_ASSERT_THROW_MES(e.m_LR.size() == expected_n_lr,
+        "Multisig info has an unexpected number of signing nonces");
+
       for (const auto &lr: e.m_LR)
       {
         CHECK_AND_ASSERT_THROW_MES(rct::isInMainSubgroup(lr.m_L), "Multisig value is not in the main subgroup");
