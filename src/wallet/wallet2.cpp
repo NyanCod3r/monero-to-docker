@@ -4421,7 +4421,7 @@ bool wallet2::get_rct_distribution(uint64_t &start_height, std::vector<uint64_t>
   {
     const boost::lock_guard<boost::recursive_mutex> lock{m_daemon_rpc_mutex};
     r = net_utils::invoke_http_bin("/get_output_distribution.bin", req, res, *m_http_client, rpc_timeout);
-    THROW_ON_RPC_RESPONSE_ERROR_GENERIC(r, {}, res, "/get_output_distribution.bin");
+    THROW_ON_RPC_RESPONSE_ERROR(r, {}, res, "/get_output_distribution.bin", error::wallet_generic_rpc_error, "/get_output_distribution.bin", get_rpc_status(m_trusted_daemon, res.status));
   }
   catch(...)
   {
@@ -5553,6 +5553,11 @@ bool wallet2::verify_password(const std::string& keys_file_name, const epee::wip
   }
   else
   {
+    if (!json.IsObject() || !json.HasMember("key_data") || !json["key_data"].IsString())
+    {
+      LOG_ERROR("Invalid wallet keys JSON: expected an object with a string key_data field");
+      return false;
+    }
     account_data = std::string(json["key_data"].GetString(), json["key_data"].GetString() +
       json["key_data"].GetStringLength());
     GET_FIELD_FROM_JSON_RETURN_ON_ERROR(json, encrypted_secret_keys, uint32_t, Uint, false, false);
@@ -5673,6 +5678,11 @@ bool wallet2::query_device(hw::device::device_type& device_type, const std::stri
   }
   else
   {
+    if (!json.IsObject() || !json.HasMember("key_data") || !json["key_data"].IsString())
+    {
+      LOG_ERROR("Invalid wallet keys JSON: expected an object with a string key_data field");
+      return false;
+    }
     account_data = std::string(json["key_data"].GetString(), json["key_data"].GetString() +
       json["key_data"].GetStringLength());
 
@@ -11988,7 +11998,7 @@ void wallet2::set_tx_key(const crypto::hash &txid, const crypto::secret_key &tx_
   {
     const boost::lock_guard<boost::recursive_mutex> lock{m_daemon_rpc_mutex};
     r = epee::net_utils::invoke_http_json("/gettransactions", req, res, *m_http_client, rpc_timeout);
-    THROW_ON_RPC_RESPONSE_ERROR_GENERIC(r, {}, res, "/gettransactions");
+    THROW_ON_RPC_RESPONSE_ERROR(r, {}, res, "/gettransactions", error::wallet_generic_rpc_error, "/gettransactions", get_rpc_status(m_trusted_daemon, res.status));
     THROW_WALLET_EXCEPTION_IF(res.txs.size() != 1, error::wallet_internal_error,
       "daemon returned wrong response for gettransactions, wrong txs count = " +
       std::to_string(res.txs.size()) + ", expected 1");
@@ -12047,7 +12057,7 @@ std::string wallet2::get_spend_proof(const crypto::hash &txid, const std::string
   {
     const boost::lock_guard<boost::recursive_mutex> lock{m_daemon_rpc_mutex};
     r = epee::net_utils::invoke_http_json("/gettransactions", req, res, *m_http_client, rpc_timeout);
-    THROW_ON_RPC_RESPONSE_ERROR_GENERIC(r, {}, res, "gettransactions");
+    THROW_ON_RPC_RESPONSE_ERROR(r, {}, res, "gettransactions", error::wallet_generic_rpc_error, "gettransactions", get_rpc_status(m_trusted_daemon, res.status));
     THROW_WALLET_EXCEPTION_IF(res.txs.size() != 1, error::wallet_internal_error,
       "daemon returned wrong response for gettransactions, wrong txs count = " +
       std::to_string(res.txs.size()) + ", expected 1");
@@ -12164,7 +12174,7 @@ bool wallet2::check_spend_proof(const crypto::hash &txid, const std::string &mes
   {
     const boost::lock_guard<boost::recursive_mutex> lock{m_daemon_rpc_mutex};
     r = epee::net_utils::invoke_http_json("/gettransactions", req, res, *m_http_client, rpc_timeout);
-    THROW_ON_RPC_RESPONSE_ERROR_GENERIC(r, {}, res, "gettransactions");
+    THROW_ON_RPC_RESPONSE_ERROR(r, {}, res, "gettransactions", error::wallet_generic_rpc_error, "gettransactions", get_rpc_status(m_trusted_daemon, res.status));
     THROW_WALLET_EXCEPTION_IF(res.txs.size() != 1, error::wallet_internal_error,
       "daemon returned wrong response for gettransactions, wrong txs count = " +
       std::to_string(res.txs.size()) + ", expected 1");
@@ -12764,8 +12774,8 @@ std::string wallet2::get_reserve_proof(const boost::optional<std::pair<uint32_t,
         error::wallet_internal_error, "Failed to derive subaddress public key");
       if (m_subaddresses.count(subaddress_spendkey) == 1)
         break;
-      THROW_WALLET_EXCEPTION_IF(additional_tx_pub_keys.empty(), error::wallet_internal_error,
-        "Normal tx pub key doesn't derive the expected output, while the additional tx pub keys are empty");
+      THROW_WALLET_EXCEPTION_IF(proof.index_in_tx >= additional_tx_pub_keys.size(), error::wallet_internal_error,
+        "Normal tx pub key doesn't derive the expected output, and no additional tx pub key exists for this output index");
       THROW_WALLET_EXCEPTION_IF(i == 1, error::wallet_internal_error,
         "Neither normal tx pub key nor additional tx pub key derive the expected output key");
       tx_pub_key_used = &additional_tx_pub_keys[proof.index_in_tx];
@@ -13139,6 +13149,7 @@ const std::pair<std::map<std::string, std::string>, std::vector<std::string>>& w
 
 void wallet2::set_account_tag(const std::set<uint32_t> &account_indices, const std::string& tag)
 {
+  get_account_tags();
   for (uint32_t account_index : account_indices)
   {
     THROW_WALLET_EXCEPTION_IF(account_index >= get_num_subaddress_accounts(), error::wallet_internal_error, "Account index out of bound");
@@ -14744,16 +14755,22 @@ rct::multisig_kLRki wallet2::get_multisig_composite_kLRki(size_t n, const std::u
 crypto::key_image wallet2::get_multisig_composite_key_image(size_t n) const
 {
   CHECK_AND_ASSERT_THROW_MES(n < m_transfers.size(), "Bad output index");
+  return get_multisig_composite_key_image(n, m_transfers[n].m_multisig_info);
+}
+//----------------------------------------------------------------------------------------------------
+crypto::key_image wallet2::get_multisig_composite_key_image(size_t n, const std::vector<multisig_info> &infos) const
+{
+  CHECK_AND_ASSERT_THROW_MES(n < m_transfers.size(), "Bad output index");
 
   const transfer_details &td = m_transfers[n];
   const crypto::public_key tx_key = get_tx_pub_key_from_received_outs(td);
   const std::vector<crypto::public_key> additional_tx_keys = cryptonote::get_additional_tx_pub_keys_from_extra(td.m_tx);
   crypto::key_image ki;
   std::vector<crypto::key_image> pkis;
-  for (const auto &info: td.m_multisig_info)
+  for (const auto &info: infos)
     for (const auto &pki: info.m_partial_key_images)
       pkis.push_back(pki);
-  bool r = multisig::generate_multisig_composite_key_image(get_account().get_keys(), m_subaddresses, td.get_public_key(), tx_key, additional_tx_keys, td.m_internal_output_index, pkis, ki);
+  bool r = multisig::generate_multisig_composite_key_image(get_account().get_keys(), m_subaddresses, td.get_public_key(), tx_key, additional_tx_keys, td.m_internal_output_index, pkis, m_multisig_signers.size(), m_multisig_threshold, ki);
   THROW_WALLET_EXCEPTION_IF(!r, error::wallet_internal_error, "Failed to generate key image");
   return ki;
 }
@@ -14915,14 +14932,22 @@ void wallet2::update_multisig_rescan_info(const std::vector<std::vector<rct::key
 
   MDEBUG("update_multisig_rescan_info: updating index " << n);
   transfer_details &td = m_transfers[n];
-  td.m_multisig_info.clear();
+
+  // validate the candidate before touching td.m_multisig_info, so a rejected candidate will never
+  // overwrite installed info. only catches count mismatches (duplicate/missing components), not
+  // a well-formed component that's just wrong for this output.
+  std::vector<multisig_info> new_info;
+  new_info.reserve(info.size());
   for (const auto &pi: info)
   {
     CHECK_AND_ASSERT_THROW_MES(n < pi.size(), "Bad pi size");
-    td.m_multisig_info.push_back(pi[n]);
+    new_info.push_back(pi[n]);
   }
+  const crypto::key_image new_key_image = get_multisig_composite_key_image(n, new_info);
+
+  td.m_multisig_info = std::move(new_info);
   m_key_images.erase(td.m_key_image);
-  td.m_key_image = get_multisig_composite_key_image(n);
+  td.m_key_image = new_key_image;
   td.m_key_image_known = true;
   td.m_key_image_request = false;
   td.m_key_image_partial = false;
@@ -14942,7 +14967,7 @@ size_t wallet2::import_multisig(std::vector<cryptonote::blobdata> blobs, bool re
   std::vector<std::vector<tools::wallet2::multisig_info>> info;
   std::unordered_set<crypto::public_key> seen;
 
-  const size_t expected_n_partial_key_images = get_account().get_multisig_keys().size();
+  const uint64_t expected_n_partial_key_images = num_priv_multisig_keys_post_setup(m_multisig_threshold, m_multisig_signers.size());
   const size_t expected_n_lr = tools::combinations_count(m_multisig_signers.size() - m_multisig_threshold, m_multisig_signers.size() - 1)
     * multisig::signing::kAlphaComponents;
 
@@ -14999,14 +15024,19 @@ size_t wallet2::import_multisig(std::vector<cryptonote::blobdata> blobs, bool re
       CHECK_AND_ASSERT_THROW_MES(e.m_LR.size() == expected_n_lr,
         "Multisig info has an unexpected number of signing nonces");
 
+      std::unordered_set<rct::key> seen_L;
       for (const auto &lr: e.m_LR)
       {
         CHECK_AND_ASSERT_THROW_MES(rct::isInMainSubgroup(lr.m_L), "Multisig value is not in the main subgroup");
         CHECK_AND_ASSERT_THROW_MES(rct::isInMainSubgroup(lr.m_R), "Multisig value is not in the main subgroup");
+        CHECK_AND_ASSERT_THROW_MES(seen_L.insert(lr.m_L).second, "Multisig info reuses a signing nonce");
       }
+      std::unordered_set<crypto::key_image> seen_ki;
       for (const auto &ki: e.m_partial_key_images)
       {
         CHECK_AND_ASSERT_THROW_MES(rct::isInMainSubgroup(rct::ki2rct(ki)), "Multisig partial key image is not in the main subgroup");
+        CHECK_AND_ASSERT_THROW_MES(rct::ki2rct(ki) != rct::identity(), "Multisig partial key image must not be the identity element");
+        CHECK_AND_ASSERT_THROW_MES(seen_ki.insert(ki).second, "Multisig info has a duplicate partial key image");
       }
     }
 
@@ -15031,13 +15061,11 @@ size_t wallet2::import_multisig(std::vector<cryptonote::blobdata> blobs, bool re
   if (n_outputs == 0)
     return 0;
 
-  // check signers are consistent
+  // check signers are members of this wallet
   for (const auto &pi: info)
   {
     CHECK_AND_ASSERT_THROW_MES(std::find(m_multisig_signers.begin(), m_multisig_signers.end(), pi[0].m_signer) != m_multisig_signers.end(),
         "Signer is not a member of this multisig wallet");
-    for (size_t n = 1; n < n_outputs; ++n)
-      CHECK_AND_ASSERT_THROW_MES(pi[n].m_signer == pi[0].m_signer, "Mismatched signers in imported multisig info");
   }
 
   // trim data we don't have info for from all participants
@@ -15048,6 +15076,18 @@ size_t wallet2::import_multisig(std::vector<cryptonote::blobdata> blobs, bool re
   if (!info.empty() && !info.front().empty())
   {
     std::sort(info.begin(), info.end(), [](const std::vector<tools::wallet2::multisig_info> &i0, const std::vector<tools::wallet2::multisig_info> &i1){ return memcmp(&i0[0].m_signer, &i1[0].m_signer, sizeof(i0[0].m_signer)) < 0; });
+  }
+
+  // validate every output before installing rescan state or detaching the chain. will only catch
+  // count mismatches (missing/duplicate components), not a well-formed component that's just
+  // wrong for this output.
+  for (size_t n = 0; n < n_outputs && n < m_transfers.size(); ++n)
+  {
+    std::vector<multisig_info> candidate;
+    candidate.reserve(info.size());
+    for (const auto &pi: info)
+      candidate.push_back(pi[n]);
+    get_multisig_composite_key_image(n, candidate);
   }
 
   // wipe prior pending rescan state and install its replacement only after full validation
@@ -15743,14 +15783,30 @@ std::vector<cryptonote::public_node> wallet2::get_public_nodes(bool white_only)
   {
     const boost::lock_guard<boost::recursive_mutex> lock{m_daemon_rpc_mutex};
     bool r = epee::net_utils::invoke_http_json("/get_public_nodes", req, res, *m_http_client, rpc_timeout);
-    THROW_ON_RPC_RESPONSE_ERROR_GENERIC(r, {}, res, "/get_public_nodes");
+    THROW_ON_RPC_RESPONSE_ERROR(r, {}, res, "/get_public_nodes", error::wallet_generic_rpc_error, "/get_public_nodes", get_rpc_status(m_trusted_daemon, res.status));
   }
 
   std::vector<cryptonote::public_node> nodes;
   nodes = res.white;
   nodes.reserve(nodes.size() + res.gray.size());
   std::copy(res.gray.begin(), res.gray.end(), std::back_inserter(nodes));
-  return nodes;
+  std::vector<cryptonote::public_node> valid_nodes;
+  valid_nodes.reserve(nodes.size());
+  for (auto &node: nodes)
+  {
+    if (node.rpc_port == 0)
+      continue;
+    auto address = net::get_network_address(node.host, node.rpc_port);
+    boost::system::error_code ec;
+    const auto ipv6 = boost::asio::ip::make_address_v6(node.host, ec);
+    if (!ec)
+      address = epee::net_utils::network_address{epee::net_utils::ipv6_network_address{ipv6, node.rpc_port}};
+    if (!address || (node.host != address->host_str() && node.host != address->str()))
+      continue;
+    node.host = address->host_str();
+    valid_nodes.push_back(std::move(node));
+  }
+  return valid_nodes;
 }
 //----------------------------------------------------------------------------------------------------
 std::pair<size_t, uint64_t> wallet2::estimate_tx_size_and_weight(bool use_rct, int n_inputs, int ring_size, int n_outputs, size_t extra_size)
