@@ -4346,6 +4346,8 @@ bool simple_wallet::init(const boost::program_options::variables_map& vm)
         password = rc.second.password();
         if (!m_wallet) return false;
         m_wallet_file = m_wallet->path();
+        if (command_line::is_arg_defaulted(vm, arg_restore_height))
+          m_restore_height = m_wallet->get_refresh_from_block_height();
       }
       catch (const std::exception &e)
       {
@@ -9896,6 +9898,8 @@ bool simple_wallet::wallet_info(const std::vector<std::string> &args)
   message_writer() << tr("Network type: ") << (
     m_wallet->nettype() == cryptonote::TESTNET ? tr("Testnet") :
     m_wallet->nettype() == cryptonote::STAGENET ? tr("Stagenet") : tr("Mainnet"));
+  message_writer() << tr("Daemon-Address: ") << m_wallet->get_daemon_address();
+  message_writer() << tr("Daemon-Proxy: ") << m_wallet->get_proxy();
   if (ms_status.multisig_is_active)
   {
     type = tr("Multisig");

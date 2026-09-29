@@ -629,23 +629,22 @@ std::pair<std::unique_ptr<tools::wallet2>, tools::password_container> generate_f
     }
 
     GET_FIELD_FROM_JSON_RETURN_ON_ERROR(json, seed, std::string, String, false, std::string());
+    GET_FIELD_FROM_JSON_RETURN_ON_ERROR(json, seed_passphrase, std::string, String, false, std::string());
     std::string old_language;
     crypto::secret_key recovery_key;
     bool restore_deterministic_wallet = false;
+    bool is_polyseed = false;
+    polyseed::data polyseed(POLYSEED_MONERO);
     if (field_seed_found)
     {
-      if (!crypto::ElectrumWords::words_to_bytes(field_seed, recovery_key, old_language))
+      if (!crypto::ElectrumWords::words_to_bytes_ex(field_seed, recovery_key, old_language, is_polyseed, polyseed))
       {
         THROW_WALLET_EXCEPTION(tools::error::wallet_internal_error, tools::wallet2::tr("Electrum-style word list failed verification"));
       }
       restore_deterministic_wallet = true;
 
-      GET_FIELD_FROM_JSON_RETURN_ON_ERROR(json, seed_passphrase, std::string, String, false, std::string());
-      if (field_seed_passphrase_found)
-      {
-        if (!field_seed_passphrase.empty())
-          recovery_key = cryptonote::decrypt_key(recovery_key, field_seed_passphrase);
-      }
+      if (!is_polyseed && !field_seed_passphrase.empty())
+        recovery_key = cryptonote::decrypt_key(recovery_key, field_seed_passphrase);
     }
 
     GET_FIELD_FROM_JSON_RETURN_ON_ERROR(json, address, std::string, String, false, std::string());
@@ -694,20 +693,26 @@ std::pair<std::unique_ptr<tools::wallet2>, tools::password_container> generate_f
       }
     }
 
-    const bool deprecated_wallet = restore_deterministic_wallet && ((old_language == crypto::ElectrumWords::old_language_name) ||
+    const bool deprecated_wallet = restore_deterministic_wallet && !is_polyseed && ((old_language == crypto::ElectrumWords::old_language_name) ||
       crypto::ElectrumWords::get_is_old_style_seed(field_seed));
     THROW_WALLET_EXCEPTION_IF(deprecated_wallet, tools::error::wallet_internal_error,
       tools::wallet2::tr("Cannot generate deprecated wallets from JSON"));
 
     wallet.reset(make_basic(vm, unattended, opts, password_prompter).release());
     wallet->set_refresh_from_block_height(field_scan_from_height);
-    wallet->explicit_refresh_from_block_height(field_scan_from_height_found);
+    wallet->explicit_refresh_from_block_height(field_scan_from_height_found || is_polyseed);
     if (!old_language.empty())
       wallet->set_seed_language(old_language);
 
     try
     {
-      if (!field_seed.empty())
+      if (is_polyseed)
+      {
+        // scan_from_height 0 or absent: generate() uses the Polyseed birthday
+        wallet->generate(field_filename, field_password, polyseed, field_seed_passphrase, recover, field_scan_from_height, create_address_file);
+        password = field_password;
+      }
+      else if (!field_seed.empty())
       {
         wallet->generate(field_filename, field_password, recovery_key, recover, false, create_address_file);
         password = field_password;
@@ -1425,7 +1430,6 @@ bool wallet2::set_daemon(std::string daemon_address, boost::optional<epee::net_u
   }
 
   CHECK_AND_ASSERT_MES(set_proxy(proxy), false, "failed to set proxy address");
-  m_proxy = proxy;
   const bool changed = m_daemon_address != daemon_address;
   m_daemon_address = std::move(daemon_address);
   m_daemon_login = std::move(daemon_login);
@@ -1446,7 +1450,13 @@ bool wallet2::set_daemon(std::string daemon_address, boost::optional<epee::net_u
 //----------------------------------------------------------------------------------------------------
 bool wallet2::set_proxy(const std::string &address)
 {
+  m_proxy = address;
   return m_http_client->set_proxy(address);
+}
+//----------------------------------------------------------------------------------------------------
+std::string wallet2::get_proxy() const
+{
+  return m_proxy;
 }
 //----------------------------------------------------------------------------------------------------
 bool wallet2::init(std::string daemon_address, boost::optional<epee::net_utils::http::login> daemon_login, const std::string &proxy_address, uint64_t upper_transaction_weight_limit, bool trusted_daemon, epee::net_utils::ssl_options_t ssl_options)
@@ -2611,7 +2621,7 @@ void wallet2::process_new_transaction(const crypto::hash &txid, const cryptonote
         }
         else if (get_payment_id_from_tx_extra_nonce(extra_nonce.nonce, payment_id))
         {
-          bool ignore = block_version >= IGNORE_LONG_PAYMENT_ID_FROM_BLOCK_VERSION;
+          bool ignore = block_version == 0 || block_version >= IGNORE_LONG_PAYMENT_ID_FROM_BLOCK_VERSION;
           if (ignore)
           {
             LOG_PRINT_L2("Found unencrypted payment ID in tx " << txid << " (ignored)");
