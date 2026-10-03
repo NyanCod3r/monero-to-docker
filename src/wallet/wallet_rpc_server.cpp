@@ -2453,6 +2453,16 @@ namespace tools
           epee::wipeable_string key = epee::to_hex::wipeable_string(m_wallet->get_account().get_keys().m_spend_secret_key);
           res.key = std::string(key.data(), key.size());
       }
+      else if(req.key_type.compare("public_view_key") == 0)
+      {
+          epee::wipeable_string key = epee::to_hex::wipeable_string(m_wallet->get_account().get_keys().m_account_address.m_view_public_key);
+          res.key = std::string(key.data(), key.size());
+      }
+      else if(req.key_type.compare("public_spend_key") == 0)
+      {
+          epee::wipeable_string key = epee::to_hex::wipeable_string(m_wallet->get_account().get_keys().m_account_address.m_spend_public_key);
+          res.key = std::string(key.data(), key.size());
+      }
       else
       {
           er.message = "key_type " + req.key_type + " not found";
@@ -4870,6 +4880,8 @@ namespace tools
   bool wallet_rpc_server::on_validate_address(const wallet_rpc::COMMAND_RPC_VALIDATE_ADDRESS::request& req, wallet_rpc::COMMAND_RPC_VALIDATE_ADDRESS::response& res, epee::json_rpc::error& er, const connection_context *ctx)
   {
     cryptonote::address_parse_info info;
+    const bool allow_dns = m_wallet ? m_wallet->is_dns_enabled()
+      : wallet2::has_dns_option(*m_vm) && !wallet2::has_offline_option(*m_vm);
     static const struct { cryptonote::network_type type; const char *stype; } net_types[] = {
       { cryptonote::MAINNET, "mainnet" },
       { cryptonote::TESTNET, "testnet" },
@@ -4883,7 +4895,7 @@ namespace tools
       if (req.allow_openalias)
       {
         std::string address;
-        res.valid = get_account_address_from_str_or_url(info, net_type.type, req.address, !m_wallet || m_wallet->is_dns_enabled(),
+        res.valid = get_account_address_from_str_or_url(info, net_type.type, req.address, allow_dns,
           [&er, &address](const std::string &url, const std::vector<std::string> &addresses, bool dnssec_valid)->std::string {
             if (!dnssec_valid)
             {
