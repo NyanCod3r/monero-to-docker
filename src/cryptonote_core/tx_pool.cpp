@@ -118,6 +118,37 @@ namespace cryptonote
       if (candidate < next_check.load(std::memory_order_relaxed))
         next_check = candidate;
     }
+
+    // Computes the transaction's prunable hash once at insertion time, so RPC
+    // lookups don't need to recompute it on every call. Version 1 transactions
+    // don't have a prunable part, so `null_hash` is correct for them as well.
+    void cache_prunable_hash(const transaction& tx, const cryptonote::blobdata& blob, txpool_tx_meta_t& meta)
+    {
+      if (tx.pruned)
+      {
+        if (tx.is_prunable_hash_valid())
+        {
+          meta.prunable_hash = tx.prunable_hash;
+          meta.prunable_hash_valid = true;
+        }
+        else
+        {
+          meta.prunable_hash = crypto::null_hash;
+          meta.prunable_hash_valid = false;
+        }
+        return;
+      }
+      if (tx.version == 1)
+      {
+        meta.prunable_hash = crypto::null_hash;
+        meta.prunable_hash_valid = true;
+        return;
+      }
+      const cryptonote::blobdata_ref blob_ref{blob};
+      meta.prunable_hash_valid = calculate_transaction_prunable_hash(tx, &blob_ref, meta.prunable_hash);
+      if (!meta.prunable_hash_valid)
+        meta.prunable_hash = crypto::null_hash;
+    }
   }
   //---------------------------------------------------------------------------------
   //---------------------------------------------------------------------------------
@@ -246,6 +277,7 @@ namespace cryptonote
         meta.pruned = tx.pruned;
         meta.bf_padding = 0;
         memset(meta.padding, 0, sizeof(meta.padding));
+        cache_prunable_hash(tx, blob, meta);
         try
         {
           if (kept_by_block)
@@ -322,6 +354,8 @@ namespace cryptonote
           meta.pruned = tx.pruned;
           meta.bf_padding = 0;
           memset(meta.padding, 0, sizeof(meta.padding));
+          if (!meta.prunable_hash_valid)
+            cache_prunable_hash(tx, blob, meta);
 
           if (!insert_key_images(tx, id, tx_relay))
             return false;
@@ -629,6 +663,8 @@ namespace cryptonote
       td.relayed = meta.relayed;
       td.do_not_relay = meta.do_not_relay;
       td.double_spend_seen = meta.double_spend_seen;
+      td.prunable_hash = meta.prunable_hash;
+      td.prunable_hash_valid = meta.prunable_hash_valid;
     }
     catch (const std::exception &e)
     {
@@ -720,9 +756,10 @@ namespace cryptonote
   {
     CRITICAL_REGION_LOCAL(m_transactions_lock);
     CRITICAL_REGION_LOCAL1(m_blockchain);
+    const uint64_t now = time(nullptr);
     std::list<std::pair<crypto::hash, uint64_t>> remove;
-    m_blockchain.for_all_txpool_txes([this, &remove](const crypto::hash &txid, const txpool_tx_meta_t &meta, const cryptonote::blobdata_ref*) {
-      uint64_t tx_age = time(nullptr) - meta.receive_time;
+    m_blockchain.for_all_txpool_txes([this, &remove, now](const crypto::hash &txid, const txpool_tx_meta_t &meta, const cryptonote::blobdata_ref*) {
+      const uint64_t tx_age = now >= meta.receive_time ? now - meta.receive_time : 0;
 
       if((tx_age > CRYPTONOTE_MEMPOOL_TX_LIVETIME && !meta.kept_by_block) ||
          (tx_age > CRYPTONOTE_MEMPOOL_TX_FROM_ALT_BLOCK_LIVETIME && meta.kept_by_block) )
@@ -1149,13 +1186,14 @@ namespace cryptonote
       if (!meta.relayed)
         stats.num_not_relayed++;
       stats.fee_total += meta.fee;
-      if (!stats.oldest || meta.receive_time < stats.oldest)
-        stats.oldest = meta.receive_time;
-      if (meta.receive_time < now - 600)
+      const uint64_t receive_time = std::min(meta.receive_time, now);
+      if (!stats.oldest || receive_time < stats.oldest)
+        stats.oldest = receive_time;
+      if (receive_time < now - 600)
         stats.num_10m++;
       if (meta.last_failed_height)
         stats.num_failing++;
-      uint64_t age = now - meta.receive_time + (now == meta.receive_time);
+      const uint64_t age = now - receive_time + (now == receive_time);
       agebytes[age].txs++;
       agebytes[age].bytes += meta.weight;
       if (meta.double_spend_seen)
@@ -1789,6 +1827,13 @@ namespace cryptonote
         {
           MINFO("Failed to re-validate tx " << e.txid << " for v" << (unsigned)version << ", dropped");
           continue;
+        }
+        // keep the prunable hash add_tx just computed, rather than overwriting it below
+        txpool_tx_meta_t new_meta;
+        if (m_blockchain.get_txpool_tx_meta(e.txid, new_meta) && new_meta.prunable_hash_valid)
+        {
+          e.meta.prunable_hash = new_meta.prunable_hash;
+          e.meta.prunable_hash_valid = true;
         }
         m_blockchain.update_txpool_tx(e.txid, e.meta);
         ++added;

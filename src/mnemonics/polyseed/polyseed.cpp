@@ -46,11 +46,15 @@ namespace polyseed {
 
       result = utf8proc_decompose(reinterpret_cast<const uint8_t*>(str), 0, buffer, POLYSEED_STR_SIZE, options);
       if (result < 0 || result > (POLYSEED_STR_SIZE - 1)) {
+        sodium_memzero(buffer, sizeof(buffer));
+        sodium_memzero(norm, sizeof(polyseed_str));
         throw std::runtime_error("Unicode normalization failed");
       }
 
       result = utf8proc_reencode(buffer, result, options);
       if (result < 0 || result > (POLYSEED_STR_SIZE - 1)) {
+        sodium_memzero(buffer, sizeof(buffer));
+        sodium_memzero(norm, sizeof(polyseed_str));
         throw std::runtime_error("Unicode normalization failed");
       }
 
@@ -138,7 +142,7 @@ namespace polyseed {
     };
 
     static error get_error(polyseed_status status) {
-        if (status > 0 && status < sizeof(error_desc) / sizeof(const char*)) {
+        if (status > 0 && static_cast<unsigned int>(status) < error_desc.size()) {
             return error(error_desc[(int)status], status);
         }
         return error("Unknown error", status);

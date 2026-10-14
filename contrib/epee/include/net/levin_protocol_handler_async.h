@@ -718,16 +718,23 @@ template<class t_connection_context>
 void async_protocol_handler_config<t_connection_context>::delete_connections(size_t count, bool incoming)
 {
   std::vector<std::shared_ptr<levin_endpoint>> connections;
+  // Keep non-target connections alive until after releasing m_connects_lock.
+  // Dropping the last reference during iteration can call del_connection()
+  // through the destructor and invalidate the current iterator.
+  std::vector<std::shared_ptr<levin_endpoint>> released;
   CRITICAL_REGION_BEGIN(m_connects_lock);
   for (auto& c: m_connects)
   {
     auto locked = c.second.lock();
-    if (locked && locked->context.m_is_income == incoming)
+    if (!locked)
+      continue;
+    if (locked->context.m_is_income == incoming)
       connections.push_back(std::move(locked));
+    else
+      released.push_back(std::move(locked));
   }
 
   // close random connections from  the provided set
-  // TODO or better just keep removing random elements (performance)
   unsigned seed = std::chrono::system_clock::now().time_since_epoch().count();
   shuffle(connections.begin(), connections.end(), std::default_random_engine(seed));
   for (size_t i = 0; i < connections.size() && i < count; ++i)

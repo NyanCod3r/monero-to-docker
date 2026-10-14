@@ -75,6 +75,7 @@
 
 class Serialization_portability_wallet_Test;
 class wallet_accessor_test;
+class wallet_pool_test;
 namespace multisig { class multisig_account; }
 
 namespace tools
@@ -175,6 +176,7 @@ private:
   {
     friend class ::Serialization_portability_wallet_Test;
     friend class ::wallet_accessor_test;
+    friend class ::wallet_pool_test;
     friend class wallet_keys_unlocker;
     friend class wallet_device_callback;
   public:
@@ -1581,9 +1583,10 @@ private:
     void process_parsed_blocks(const uint64_t start_height, const std::vector<cryptonote::block_complete_entry> &blocks, const std::vector<parsed_block> &parsed_blocks, uint64_t& blocks_added, std::map<std::pair<uint64_t, uint64_t>, size_t> *output_tracker_cache = NULL);
     bool accept_pool_tx_for_processing(const crypto::hash &txid, const std::unordered_set<crypto::hash> &payments_tx_hashes);
     void process_unconfirmed_transfer(bool incremental, const crypto::hash &txid, wallet2::unconfirmed_transfer_details &tx_details, bool seen_in_pool, std::chrono::system_clock::time_point now, bool refreshed);
+    void reset_pool_info_query_time();
     void process_pool_info_extent(const cryptonote::COMMAND_RPC_GET_BLOCKS_FAST::response &res, std::vector<std::tuple<cryptonote::transaction, crypto::hash, bool>> &process_txs, bool refreshed);
     void update_pool_state_by_pool_query(std::vector<std::tuple<cryptonote::transaction, crypto::hash, bool>> &process_txs, bool refreshed = false);
-    void update_pool_state_from_pool_data(bool incremental, const std::vector<crypto::hash> &removed_pool_txids, const std::vector<std::tuple<cryptonote::transaction, crypto::hash, bool>> &added_pool_txs, std::vector<std::tuple<cryptonote::transaction, crypto::hash, bool>> &process_txs, bool refreshed);
+    void update_pool_state_from_pool_data(bool incremental, const std::vector<crypto::hash> &removed_pool_txids, const std::unordered_set<crypto::hash> &added_pool_txids, const std::vector<std::tuple<cryptonote::transaction, crypto::hash, bool>> &added_pool_txs, std::vector<std::tuple<cryptonote::transaction, crypto::hash, bool>> &process_txs, bool refreshed);
     uint64_t select_transfers(uint64_t needed_money, std::vector<size_t> unused_transfers_indices, std::vector<size_t>& selected_transfers) const;
     bool prepare_file_names(const std::string& file_path);
     void process_unconfirmed(const crypto::hash &txid, const cryptonote::transaction& tx, uint64_t height);
@@ -1593,6 +1596,7 @@ private:
     void check_genesis(const crypto::hash& genesis_hash) const; //throws
     bool generate_chacha_key_from_secret_keys(crypto::chacha_key &key) const;
     void generate_chacha_key_from_password(const epee::wipeable_string &pass, crypto::chacha_key &key) const;
+    void update_deterministic_state();
     crypto::hash get_payment_id(const pending_tx &ptx) const;
     void check_acc_out_precomp(const cryptonote::tx_out &o, const crypto::key_derivation &derivation, const std::vector<crypto::key_derivation> &additional_derivations, size_t i, tx_scan_info_t &tx_scan_info) const;
     void check_acc_out_precomp(const cryptonote::tx_out &o, const crypto::key_derivation &derivation, const std::vector<crypto::key_derivation> &additional_derivations, size_t i, const is_out_data *is_out_data, tx_scan_info_t &tx_scan_info) const;
@@ -1714,6 +1718,7 @@ private:
     cryptonote::network_type m_nettype;
     uint64_t m_kdf_rounds;
     std::string seed_language; /*!< Language of the mnemonics (seed), in that language, e.g. "Deutsch" for German */
+    bool m_deterministic;
     bool is_old_file_format; /*!< Whether the wallet file is of an old file format */
     bool m_watch_only; /*!< no spend key */
     bool m_polyseed;

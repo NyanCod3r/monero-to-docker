@@ -173,6 +173,8 @@ namespace net_utils
         struct {
           std::deque<epee::byte_slice> queue;
           std::size_t total_bytes;
+          bool timeout_extended;
+          bool reply_extended;
         } write;
       };
 
@@ -440,7 +442,12 @@ namespace net_utils
     }
 
     int get_binded_port(){return m_port;}
-    int get_binded_port_ipv6(){return m_port_ipv6;}
+    int get_binded_port_ipv6() const
+    {
+      boost::system::error_code ec;
+      const auto endpoint = acceptor_ipv6.local_endpoint(ec);
+      return ec ? 0 : endpoint.port();
+    }
 
     long get_connections_count() const
     {
