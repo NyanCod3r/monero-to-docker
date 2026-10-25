@@ -32,6 +32,7 @@
 #include <boost/filesystem/operations.hpp>
 #include <boost/algorithm/string.hpp>
 #include <boost/preprocessor/stringize.hpp>
+#include <algorithm>
 #include <cstdint>
 #include <chrono>
 #include <cstring>
@@ -161,17 +162,15 @@ namespace
     return pwd_container;
   }
   //------------------------------------------------------------------------------------------------------------------------------
-  void set_confirmations(tools::wallet_rpc::transfer_entry &entry, uint64_t blockchain_height, uint64_t block_reward, uint64_t unlock_time)
+  void set_confirmations(tools::wallet_rpc::transfer_entry &entry, uint64_t blockchain_height, uint64_t unlock_time)
   {
     if (entry.height >= blockchain_height || (entry.height == 0 && (!strcmp(entry.type.c_str(), "pending") || !strcmp(entry.type.c_str(), "pool"))))
       entry.confirmations = 0;
     else
       entry.confirmations = blockchain_height - entry.height;
 
-    if (block_reward == 0)
-      entry.suggested_confirmations_threshold = 0;
-    else
-      entry.suggested_confirmations_threshold = (entry.amount + block_reward - 1) / block_reward;
+    constexpr uint64_t reference_reward = FINAL_SUBSIDY_PER_MINUTE * (DIFFICULTY_TARGET_V2 / 60);
+    entry.suggested_confirmations_threshold = entry.amount / reference_reward + (entry.amount % reference_reward != 0);
 
     if (unlock_time < CRYPTONOTE_MAX_BLOCK_NUMBER)
     {
@@ -547,7 +546,7 @@ namespace tools
     entry.subaddr_index = pd.m_subaddr_index;
     entry.subaddr_indices.push_back(pd.m_subaddr_index);
     entry.address = m_wallet->get_subaddress_as_str(pd.m_subaddr_index);
-    set_confirmations(entry, m_wallet->get_blockchain_current_height(), m_wallet->get_last_block_reward(), pd.m_unlock_time);
+    set_confirmations(entry, m_wallet->get_blockchain_current_height(), pd.m_unlock_time);
   }
   //------------------------------------------------------------------------------------------------------------------------------
   void wallet_rpc_server::fill_transfer_entry(tools::wallet_rpc::transfer_entry &entry, const crypto::hash &txid, const tools::wallet2::confirmed_transfer_details &pd) const
@@ -578,7 +577,7 @@ namespace tools
     for (uint32_t i: pd.m_subaddr_indices)
       entry.subaddr_indices.push_back({pd.m_subaddr_account, i});
     entry.address = m_wallet->get_subaddress_as_str({pd.m_subaddr_account, 0});
-    set_confirmations(entry, m_wallet->get_blockchain_current_height(), m_wallet->get_last_block_reward(), pd.m_unlock_time);
+    set_confirmations(entry, m_wallet->get_blockchain_current_height(), pd.m_unlock_time);
   }
   //------------------------------------------------------------------------------------------------------------------------------
   void wallet_rpc_server::fill_transfer_entry(tools::wallet_rpc::transfer_entry &entry, const crypto::hash &txid, const tools::wallet2::unconfirmed_transfer_details &pd) const
@@ -609,7 +608,7 @@ namespace tools
     for (uint32_t i: pd.m_subaddr_indices)
       entry.subaddr_indices.push_back({pd.m_subaddr_account, i});
     entry.address = m_wallet->get_subaddress_as_str({pd.m_subaddr_account, 0});
-    set_confirmations(entry, m_wallet->get_blockchain_current_height(), m_wallet->get_last_block_reward(), pd.m_tx.unlock_time);
+    set_confirmations(entry, m_wallet->get_blockchain_current_height(), pd.m_tx.unlock_time);
   }
   //------------------------------------------------------------------------------------------------------------------------------
   void wallet_rpc_server::fill_transfer_entry(tools::wallet_rpc::transfer_entry &entry, const crypto::hash &payment_id, const tools::wallet2::pool_payment_details &ppd) const
@@ -632,7 +631,7 @@ namespace tools
     entry.subaddr_index = pd.m_subaddr_index;
     entry.subaddr_indices.push_back(pd.m_subaddr_index);
     entry.address = m_wallet->get_subaddress_as_str(pd.m_subaddr_index);
-    set_confirmations(entry, m_wallet->get_blockchain_current_height(), m_wallet->get_last_block_reward(), pd.m_unlock_time);
+    set_confirmations(entry, m_wallet->get_blockchain_current_height(), pd.m_unlock_time);
   }
   //------------------------------------------------------------------------------------------------------------------------------
   bool wallet_rpc_server::on_get_wallet_info(const wallet_rpc::COMMAND_RPC_GET_WALLET_INFO::request& req, wallet_rpc::COMMAND_RPC_GET_WALLET_INFO::response& res, epee::json_rpc::error& er, const connection_context *ctx)
@@ -3140,15 +3139,17 @@ namespace tools
       return false;
     }
 
-    if (req.account_index >= m_wallet->get_num_subaddress_accounts())
+    if (!req.all_accounts && req.account_index >= m_wallet->get_num_subaddress_accounts())
     {
       er.code = WALLET_RPC_ERROR_CODE_ACCOUNT_INDEX_OUT_OF_BOUNDS;
       er.message = "Account index is out of bound";
       return false;
     }
 
+    const boost::optional<uint32_t> account_index = req.all_accounts ? boost::none : boost::optional<uint32_t>{req.account_index};
+
     std::list<std::pair<crypto::hash, tools::wallet2::payment_details>> payments;
-    m_wallet->get_payments(payments, 0, (uint64_t)-1, req.account_index);
+    m_wallet->get_payments(payments, 0, (uint64_t)-1, account_index);
     for (std::list<std::pair<crypto::hash, tools::wallet2::payment_details>>::const_iterator i = payments.begin(); i != payments.end(); ++i) {
       if (i->second.m_tx_hash == txid)
       {
@@ -3158,7 +3159,7 @@ namespace tools
     }
 
     std::list<std::pair<crypto::hash, tools::wallet2::confirmed_transfer_details>> payments_out;
-    m_wallet->get_payments_out(payments_out, 0, (uint64_t)-1, req.account_index);
+    m_wallet->get_payments_out(payments_out, 0, (uint64_t)-1, account_index);
     for (std::list<std::pair<crypto::hash, tools::wallet2::confirmed_transfer_details>>::const_iterator i = payments_out.begin(); i != payments_out.end(); ++i) {
       if (i->first == txid)
       {
@@ -3168,7 +3169,7 @@ namespace tools
     }
 
     std::list<std::pair<crypto::hash, tools::wallet2::unconfirmed_transfer_details>> upayments;
-    m_wallet->get_unconfirmed_payments_out(upayments, req.account_index);
+    m_wallet->get_unconfirmed_payments_out(upayments, account_index);
     for (std::list<std::pair<crypto::hash, tools::wallet2::unconfirmed_transfer_details>>::const_iterator i = upayments.begin(); i != upayments.end(); ++i) {
       if (i->first == txid)
       {
@@ -3186,7 +3187,7 @@ namespace tools
     }
 
     std::list<std::pair<crypto::hash, tools::wallet2::pool_payment_details>> pool_payments;
-    m_wallet->get_unconfirmed_payments(pool_payments, req.account_index);
+    m_wallet->get_unconfirmed_payments(pool_payments, account_index);
     for (std::list<std::pair<crypto::hash, tools::wallet2::pool_payment_details>>::const_iterator i = pool_payments.begin(); i != pool_payments.end(); ++i) {
       if (i->second.m_pd.m_tx_hash == txid)
       {
@@ -4950,7 +4951,9 @@ namespace tools
     }
 
     epee::net_utils::http::url_content parsed{};
-    if (!req.address.empty() && !epee::net_utils::parse_url(req.address, parsed))
+    if (!req.address.empty() &&
+        (!epee::net_utils::parse_url(req.address, parsed) ||
+         std::any_of(parsed.host.begin(), parsed.host.end(), [](unsigned char c) { return c <= ' ' || c == 0x7f; })))
     {
       er.code = WALLET_RPC_ERROR_CODE_NO_DAEMON_CONNECTION;
       er.message = "Failed to parse daemon address";
@@ -5000,13 +5003,12 @@ namespace tools
     };
 
     // If a proxy or SSL is explicitly enabled, then ssl_allow_any_cert, ssl_ca_file, ssl_allowed_fingerprints, or use of a .onion or .i2p address is required
-    const boost::string_ref real_daemon = boost::string_ref{req.address}.substr(0, req.address.rfind(':'));
     const bool use_proxy = !req.proxy.empty();
     const bool verification_required =
       ssl_options.verification != epee::net_utils::ssl_verification_t::none &&
       (ssl_options.support == epee::net_utils::ssl_support_t::e_ssl_support_enabled || use_proxy);
 
-    if (verification_required && !ssl_options.has_strong_verification(real_daemon))
+    if (verification_required && !ssl_options.has_strong_verification(parsed.host))
     {
       er.code = WALLET_RPC_ERROR_CODE_NO_DAEMON_CONNECTION;
       er.message = "SSL or proxy is enabled but no strong verification was configured; set ssl_allow_any_cert, ssl_ca_file, or ssl_allowed_fingerprints, or use a .onion or .i2p address";

@@ -26,6 +26,8 @@
 # STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF
 # THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+add_subdirectory(gen_corpus)
+
 if(OSSFUZZ)
 # Add the include path for <fuzzer/FuzzedDataProvider.h>
 include_directories(${CMAKE_SOURCE_DIR}/tests/fuzz/include)
@@ -362,5 +364,51 @@ target_link_libraries(clsag_pubs_fuzz_tests
     ${EXTRA_LIBRARIES}
     $ENV{LIB_FUZZING_ENGINE})
 set_property(TARGET clsag_pubs_fuzz_tests
+  PROPERTY
+    FOLDER "tests")
+
+monero_add_minimal_executable(multisig-kex_fuzz_tests multisig_kex.cpp fuzzer.cpp)
+target_link_libraries(multisig-kex_fuzz_tests
+  PRIVATE
+    multisig
+    cryptonote_core
+    epee
+    ${Boost_PROGRAM_OPTIONS_LIBRARY}
+    ${CMAKE_THREAD_LIBS_INIT}
+    ${EXTRA_LIBRARIES}
+    $ENV{LIB_FUZZING_ENGINE})
+set_property(TARGET multisig-kex_fuzz_tests
+  PROPERTY
+    FOLDER "tests")
+
+monero_add_minimal_executable(multisig-tx_fuzz_tests multisig_tx.cpp multisig_init.h fuzzer.cpp)
+target_link_libraries(multisig-tx_fuzz_tests
+  PRIVATE
+    wallet
+    multisig
+    cryptonote_core
+    p2p
+    epee
+    device
+    ${CMAKE_THREAD_LIBS_INIT}
+    ${EXTRA_LIBRARIES}
+    $ENV{LIB_FUZZING_ENGINE})
+set_property(TARGET multisig-tx_fuzz_tests
+  PROPERTY
+    FOLDER "tests")
+
+monero_add_minimal_executable(multisig-info_fuzz_tests multisig_info.cpp multisig_init.h fuzzer.cpp)
+target_link_libraries(multisig-info_fuzz_tests
+  PRIVATE
+    wallet
+    multisig
+    cryptonote_core
+    p2p
+    epee
+    device
+    ${CMAKE_THREAD_LIBS_INIT}
+    ${EXTRA_LIBRARIES}
+    $ENV{LIB_FUZZING_ENGINE})
+set_property(TARGET multisig-info_fuzz_tests
   PROPERTY
     FOLDER "tests")

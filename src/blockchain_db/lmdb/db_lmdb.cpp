@@ -2059,7 +2059,8 @@ bool BlockchainLMDB::prune_worker(int mode, uint32_t pruning_seed)
     // pruned already
     if (v.mv_size != sizeof(uint32_t))
       throw0(DB_ERROR("Failed to retrieve or create pruning seed: unexpected value size"));
-    const uint32_t data = *(const uint32_t*)v.mv_data;
+    uint32_t data;
+    memcpy(&data, v.mv_data, sizeof(data));
     if (pruning_seed == 0)
       pruning_seed = tools::get_pruning_stripe(data);
     if (tools::get_pruning_stripe(data) != pruning_seed)
@@ -3284,7 +3285,7 @@ bool BlockchainLMDB::get_blocks_from(uint64_t start_height, size_t min_block_cou
         throw0(DB_ERROR(lmdb_error("Error attempting to retrieve transaction data from the db: ", result).c_str()));
       if (!pruned)
       {
-        result = mdb_cursor_get(m_cur_txs_prunable, &val_tx_id, &v, op);
+        result = mdb_cursor_get(m_cur_txs_prunable, &val_tx_id, &v, MDB_SET);
         if (result)
           throw0(DB_ERROR(lmdb_error("Error attempting to retrieve transaction data from the db: ", result).c_str()));
       }
@@ -3320,7 +3321,7 @@ bool BlockchainLMDB::get_blocks_from(uint64_t start_height, size_t min_block_cou
       else
       {
         // get the prunable data
-        result = mdb_cursor_get(m_cur_txs_prunable, &val_tx_id, &v, op);
+        result = mdb_cursor_get(m_cur_txs_prunable, &val_tx_id, &v, MDB_SET);
         if (result)
           throw0(DB_ERROR(lmdb_error("Error attempting to retrieve transaction data from the db: ", result).c_str()));
         tx_blob.append(reinterpret_cast<const char*>(v.mv_data), v.mv_size);

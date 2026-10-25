@@ -401,7 +401,6 @@ private:
       std::unordered_set<crypto::public_key> ignore;
       std::unordered_set<rct::key> used_L;
       std::unordered_set<crypto::public_key> signing_keys;
-      rct::multisig_out msout;
 
       rct::keyM total_alpha_G;
       rct::keyM total_alpha_H;
@@ -416,7 +415,12 @@ private:
         FIELD(ignore)
         FIELD(used_L)
         FIELD(signing_keys)
-        FIELD(msout)
+        {
+          // read/write 2 empty key vectors for defunct `multisig_out`
+          rct::keyV ms_dummy;
+          FIELD_N("ms_dummy_1", ms_dummy)
+          FIELD_N("ms_dummy_2", ms_dummy)
+        }
         FIELD(total_alpha_G)
         FIELD(total_alpha_H)
         FIELD(c_0)
@@ -760,6 +764,7 @@ private:
      */
     void rewrite(const std::string& wallet_name, const epee::wipeable_string& password);
     void write_watch_only_wallet(const std::string& wallet_name, const epee::wipeable_string& password, std::string &new_keys_filename);
+    void write_watch_only_wallet(const std::string& wallet_name, const epee::wipeable_string& original_password, const epee::wipeable_string& watch_only_password, std::string &new_keys_filename);
     void load(const std::string& wallet, const epee::wipeable_string& password, const std::string& keys_buf = "", const std::string& cache_buf = "");
     void store();
     /*!
@@ -1249,6 +1254,7 @@ private:
     void check_tx_key(const crypto::hash &txid, const crypto::secret_key &tx_key, const std::vector<crypto::secret_key> &additional_tx_keys, const cryptonote::account_public_address &address, uint64_t &received, bool &in_pool, uint64_t &confirmations);
     void check_tx_key_helper(const crypto::hash &txid, const crypto::key_derivation &derivation, const std::vector<crypto::key_derivation> &additional_derivations, const cryptonote::account_public_address &address, uint64_t &received, bool &in_pool, uint64_t &confirmations);
     void check_tx_key_helper(const cryptonote::transaction &tx, const crypto::key_derivation &derivation, const std::vector<crypto::key_derivation> &additional_derivations, const cryptonote::account_public_address &address, uint64_t &received) const;
+    uint64_t check_tx_key_helper_at(const cryptonote::transaction &tx, const crypto::key_derivation &derivation, const std::vector<crypto::key_derivation> &additional_derivations, const cryptonote::account_public_address &address, size_t n) const;
     bool is_out_to_acc(const cryptonote::account_public_address &address, const crypto::public_key& out_key, const crypto::key_derivation &derivation, const std::vector<crypto::key_derivation> &additional_derivations, const size_t output_index, const boost::optional<crypto::view_tag> &view_tag_opt, crypto::key_derivation &found_derivation) const;
     std::string get_tx_proof(const crypto::hash &txid, const cryptonote::account_public_address &address, bool is_subaddress, const std::string &message);
     std::string get_tx_proof(const cryptonote::transaction &tx, const crypto::secret_key &tx_key, const std::vector<crypto::secret_key> &additional_tx_keys, const cryptonote::account_public_address &address, bool is_subaddress, const std::string &message) const;
@@ -1542,6 +1548,7 @@ private:
     bool store_keys(const std::string& keys_file_name, const epee::wipeable_string& password, bool watch_only = false);
     bool store_keys(const std::string& keys_file_name, const crypto::chacha_key& key, bool watch_only = false, bool background_keys_file = false);
     boost::optional<wallet2::keys_file_data> get_keys_file_data(const crypto::chacha_key& key, bool watch_only = false, bool background_keys_file = false);
+    boost::optional<wallet2::keys_file_data> get_keys_file_data(const crypto::chacha_key& key, const crypto::chacha_key& original_key, bool watch_only, bool background_keys_file, bool sanitize_watch_only_export);
     bool store_keys_file_data(const std::string& keys_file_name, wallet2::keys_file_data &keys_file_data, bool background_keys_file = false);
     /*!
      * \brief Load wallet keys information from wallet file.

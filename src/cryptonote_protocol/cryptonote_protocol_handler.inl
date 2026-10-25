@@ -70,6 +70,7 @@
       } \
     } \
   } while(0)
+#define MLOG_P2P_MESSAGE_DETAILS(x) MCTRACE("net.p2p.msg.dump", x)
 
 #define MLOG_PEER_STATE(x) \
   MCINFO(MONERO_DEFAULT_LOG_CATEGORY, context << "[" << epee::string_tools::to_string_hex(context.m_pruning_seed) << "] state: " << x << " in state " << cryptonote::get_protocol_state_string(context.m_state))
@@ -541,10 +542,13 @@ namespace cryptonote
     {
       LOG_ERROR_CCONTEXT
       (
-        "sent wrong block: failed to parse and validate block: "
-        << epee::string_tools::buff_to_hex_nodelimer(arg.b.block)
+        "sent wrong block: failed to parse and validate block: blob_size=" << arg.b.block.size()
+        << ", current_blockchain_height=" << arg.current_blockchain_height
+        << ", supplied_txs=" << arg.b.txs.size()
         << ", dropping connection"
       );
+      MLOG_P2P_MESSAGE_DETAILS(context << "Malformed fluffy block blob: "
+        << epee::string_tools::buff_to_hex_nodelimer(arg.b.block));
 
       drop_connection(context, false, false);
       return LEVIN_ERROR_CONNECTION;
@@ -556,11 +560,11 @@ namespace cryptonote
     MLOG_P2P_MESSAGE(context << "Received NOTIFY_NEW_FLUFFY_BLOCK " << new_block_hash << " (height "
       << new_block_height << ", " << arg.b.txs.size() << " txes, peer's height: " << peer_height << ")");
 
-    // Pause mining and resume after block verification to prevent wasted mining cycles while
-    // validating the next block. Needs more research into if this is a DoS vector or not. Invalid
-    // block validation will cause disconnects and bans, so it might not be that bad.
-    m_core.pause_mine();
-    const epee::scope_guard resume_mine_on_leave([this](){ m_core.resume_mine(); });
+    // Pause mining while verifying an unknown block to avoid wasted mining cycles.
+    const bool pause_mining = !m_core.have_block(new_block_hash);
+    if (pause_mining)
+      m_core.pause_mine();
+    const epee::scope_guard resume_mine_on_leave([this, pause_mining](){ if (pause_mining) m_core.resume_mine(); });
 
     // This set allows us to quickly sanity check that the block binds all txs contained in this
     // fluffy payload, which means that no extra stowaway txs can be harbored. In the case of a
@@ -574,7 +578,10 @@ namespace cryptonote
     // Check for duplicate txids in parsed block blob
     if (blk_txids_set.size() != new_block.tx_hashes.size())
     {
-      MERROR("sent bad block entry: there are duplicate tx hashes in parsed block: "
+      MERROR("sent bad block entry: there are duplicate tx hashes in parsed block: block_hash="
+        << new_block_hash << ", blob_size=" << arg.b.block.size()
+        << ", tx_hashes=" << new_block.tx_hashes.size() << ", unique_tx_hashes=" << blk_txids_set.size());
+      MLOG_P2P_MESSAGE_DETAILS(context << "Fluffy block blob with duplicate transaction hashes: "
         << epee::string_tools::buff_to_hex_nodelimer(arg.b.block));
       drop_connection(context, false, false);
       return LEVIN_ERROR_CONNECTION;
@@ -1025,14 +1032,14 @@ namespace cryptonote
 
     if(arg.blocks.empty())
     {
-      LOG_ERROR_CCONTEXT("sent wrong NOTIFY_HAVE_OBJECTS: no blocks");
+      LOG_ERROR_CCONTEXT("sent wrong NOTIFY_RESPONSE_GET_OBJECTS: no blocks");
       drop_connection(context, true, false);
       ++m_sync_bad_spans_downloaded;
       return LEVIN_ERROR_CONNECTION;
     }
     if(context.m_last_response_height > arg.current_blockchain_height)
     {
-      LOG_ERROR_CCONTEXT("sent wrong NOTIFY_HAVE_OBJECTS: arg.m_current_blockchain_height=" << arg.current_blockchain_height
+      LOG_ERROR_CCONTEXT("sent wrong NOTIFY_RESPONSE_GET_OBJECTS: arg.m_current_blockchain_height=" << arg.current_blockchain_height
         << " < m_last_response_height=" << context.m_last_response_height << ", dropping connection");
       drop_connection(context, false, false);
       ++m_sync_bad_spans_downloaded;
@@ -1066,16 +1073,24 @@ namespace cryptonote
       crypto::hash block_hash;
       if(!parse_and_validate_block_from_blob(arg.blocks[i].block, b, block_hash))
       {
-        LOG_ERROR_CCONTEXT("sent wrong block: failed to parse and validate block: "
-          << epee::string_tools::buff_to_hex_nodelimer(arg.blocks[i].block) << ", dropping connection");
+        LOG_ERROR_CCONTEXT("sent wrong block: failed to parse and validate block: blob_size="
+          << arg.blocks[i].block.size() << ", response_index=" << i
+          << ", expected_height=" << context.m_expect_height
+          << ", peer_tip=" << arg.current_blockchain_height << ", dropping connection");
+        MLOG_P2P_MESSAGE_DETAILS(context << "Malformed sync response block blob: "
+          << epee::string_tools::buff_to_hex_nodelimer(arg.blocks[i].block));
         drop_connection(context, false, false);
         ++m_sync_bad_spans_downloaded;
         return LEVIN_ERROR_CONNECTION;
       }
       if (b.miner_tx.vin.size() != 1 || b.miner_tx.vin.front().type() != typeid(txin_gen))
       {
-        LOG_ERROR_CCONTEXT("sent wrong block: block: miner tx does not have exactly one txin_gen input"
-          << epee::string_tools::buff_to_hex_nodelimer(arg.blocks[i].block) << ", dropping connection");
+        LOG_ERROR_CCONTEXT("sent wrong block: miner tx does not have exactly one txin_gen input: block_hash="
+          << block_hash << ", blob_size=" << arg.blocks[i].block.size()
+          << ", tx_hashes=" << b.tx_hashes.size() << ", tx_blobs=" << arg.blocks[i].txs.size()
+          << ", response_index=" << i << ", dropping connection");
+        MLOG_P2P_MESSAGE_DETAILS(context << "Sync response block blob with invalid miner tx: "
+          << epee::string_tools::buff_to_hex_nodelimer(arg.blocks[i].block));
         drop_connection(context, false, false);
         ++m_sync_bad_spans_downloaded;
         return LEVIN_ERROR_CONNECTION;
