@@ -371,6 +371,12 @@ namespace cryptonote
   template<class t_core>
   bool t_cryptonote_protocol_handler<t_core>::process_payload_sync_data(const CORE_SYNC_DATA& hshd, cryptonote_connection_context& context, bool is_inital)
   {
+    if (hshd.current_height >= CRYPTONOTE_MAX_BLOCK_NUMBER)
+    {
+      MWARNING(context << " peer claims an invalid height of " << hshd.current_height << ", disconnecting");
+      return false;
+    }
+
     if(context.m_state == cryptonote_connection_context::state_before_handshake && !is_inital)
       return true;
 
@@ -445,8 +451,20 @@ namespace cryptonote
     if (have_top)
     {
       context.set_state_normal();
-      if(is_inital  && hshd.current_height >= target && target == m_core.get_current_blockchain_height())
-        on_connection_synchronized();
+      if (is_inital)
+      {
+        uint64_t local_top_height;
+        crypto::hash local_top_id;
+        m_core.get_blockchain_top(local_top_height, local_top_id);
+        const uint64_t local_height = local_top_height + 1;
+        if (target == local_height && hshd.current_height == local_height)
+        {
+          block top_block;
+          if (hshd.top_id == local_top_id ||
+              (m_core.get_block_by_hash(hshd.top_id, top_block) && get_block_height(top_block) == local_top_height))
+            on_connection_synchronized();
+        }
+      }
       return true;
     }
 
@@ -1065,6 +1083,13 @@ namespace cryptonote
       ++m_sync_bad_spans_downloaded;
       return LEVIN_ERROR_CONNECTION;
     }
+    if (arg.current_blockchain_height >= CRYPTONOTE_MAX_BLOCK_NUMBER)
+    {
+      LOG_ERROR_CCONTEXT("sent wrong NOTIFY_HAVE_OBJECTS: invalid current_blockchain_height=" << arg.current_blockchain_height);
+      drop_connection(context, false, false);
+      ++m_sync_bad_spans_downloaded;
+      return LEVIN_ERROR_CONNECTION;
+    }
     if(context.m_last_response_height > arg.current_blockchain_height)
     {
       LOG_ERROR_CCONTEXT("sent wrong NOTIFY_RESPONSE_GET_OBJECTS: arg.m_current_blockchain_height=" << arg.current_blockchain_height
@@ -1651,6 +1676,8 @@ skip:
     m_p2p->for_each_connection([&](cryptonote_connection_context& context, nodetool::peerid_type peer_id, uint32_t support_flags)->bool
     {
       if (cntxt.m_connection_id == context.m_connection_id)
+        return true;
+      if (context.m_remote_address.get_zone() != epee::net_utils::zone::public_)
         return true;
       if (context.m_state == cryptonote_connection_context::state_normal)
       {
@@ -2929,10 +2956,14 @@ skip:
   template<class t_core>
   void t_cryptonote_protocol_handler<t_core>::on_connection_close(cryptonote_connection_context &context)
   {
-    uint64_t target = 0;
+    uint64_t target = 0, public_target = 0;
     m_p2p->for_each_connection([&](const connection_context& cntxt, nodetool::peerid_type peer_id, uint32_t support_flags) {
       if (cntxt.m_state >= cryptonote_connection_context::state_synchronizing && cntxt.m_connection_id != context.m_connection_id)
+      {
         target = std::max(target, cntxt.m_remote_blockchain_height);
+        if (cntxt.m_remote_address.get_zone() == epee::net_utils::zone::public_)
+          public_target = std::max(public_target, cntxt.m_remote_blockchain_height);
+      }
       return true;
     });
     const uint64_t previous_target = m_core.get_target_blockchain_height();
@@ -2940,14 +2971,16 @@ skip:
     {
       MINFO("Target height decreasing from " << previous_target << " to " << target);
       m_core.set_target_blockchain_height(target);
-      if (target < m_core.get_current_blockchain_height() + 5)
-        m_core.safesyncmode(true);
       if (target == 0 && context.m_state > cryptonote_connection_context::state_before_handshake && !m_stopping)
       {
         MCWARNING("global", "monerod is now disconnected from the network");
         m_ask_for_txpool_complement = true;
       }
     }
+    if ((target < previous_target || (context.m_remote_address.get_zone() == epee::net_utils::zone::public_ &&
+        context.m_state >= cryptonote_connection_context::state_synchronizing)) &&
+        public_target < m_core.get_current_blockchain_height() + 5)
+      m_core.safesyncmode(true);
 
     m_block_queue.flush_spans(context.m_connection_id, false);
     MLOG_PEER_STATE("closed");
