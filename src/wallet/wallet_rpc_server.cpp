@@ -37,6 +37,7 @@
 #include <chrono>
 #include <cstring>
 #include <thread>
+#include <unordered_set>
 
 #include "version.h"
 #include "wallet_rpc_server.h"
@@ -694,24 +695,48 @@ namespace tools
     if (!m_wallet) return not_open(er);
     try
     {
-      res.balance = req.all_accounts ? m_wallet->balance_all(req.strict) : m_wallet->balance(req.account_index, req.strict);
-      res.unlocked_balance = req.all_accounts ? m_wallet->unlocked_balance_all(req.strict, &res.blocks_to_unlock, &res.time_to_unlock) : m_wallet->unlocked_balance(req.account_index, req.strict, &res.blocks_to_unlock, &res.time_to_unlock);
+      if (req.all_accounts)
+      {
+        res.balance = 0;
+        res.unlocked_balance = 0;
+        res.blocks_to_unlock = 0;
+        res.time_to_unlock = 0;
+        res.multisig_import_needed = m_wallet->get_multisig_status().multisig_is_active && m_wallet->has_multisig_partial_key_images();
+        const auto balances = m_wallet->balances_per_subaddress_all(req.strict);
+        for (uint32_t account_index = 0; account_index < balances.size(); ++account_index)
+        {
+          for (const auto& entry: balances[account_index])
+          {
+            const auto& subaddress = entry.second;
+            res.balance += subaddress.balance;
+            res.unlocked_balance += subaddress.unlocked_balance;
+            res.blocks_to_unlock = std::max(res.blocks_to_unlock, subaddress.blocks_to_unlock);
+            res.time_to_unlock = std::max(res.time_to_unlock, subaddress.time_to_unlock);
+
+            wallet_rpc::COMMAND_RPC_GET_BALANCE::per_subaddress_info info;
+            info.account_index = account_index;
+            info.address_index = entry.first;
+            const cryptonote::subaddress_index index = {account_index, entry.first};
+            info.address = m_wallet->get_subaddress_as_str(index);
+            info.balance = subaddress.balance;
+            info.unlocked_balance = subaddress.unlocked_balance;
+            info.blocks_to_unlock = subaddress.blocks_to_unlock;
+            info.time_to_unlock = subaddress.time_to_unlock;
+            info.label = m_wallet->get_subaddress_label(index);
+            info.num_unspent_outputs = subaddress.num_unspent_outputs;
+            res.per_subaddress.emplace_back(std::move(info));
+          }
+        }
+        return true;
+      }
+
+      res.balance = m_wallet->balance(req.account_index, req.strict);
+      res.unlocked_balance = m_wallet->unlocked_balance(req.account_index, req.strict, &res.blocks_to_unlock, &res.time_to_unlock);
       res.multisig_import_needed = m_wallet->get_multisig_status().multisig_is_active && m_wallet->has_multisig_partial_key_images();
       std::map<uint32_t, std::map<uint32_t, uint64_t>> balance_per_subaddress_per_account;
       std::map<uint32_t, std::map<uint32_t, std::pair<uint64_t, std::pair<uint64_t, uint64_t>>>> unlocked_balance_per_subaddress_per_account;
-      if (req.all_accounts)
-      {
-        for (uint32_t account_index = 0; account_index < m_wallet->get_num_subaddress_accounts(); ++account_index)
-        {
-          balance_per_subaddress_per_account[account_index] = m_wallet->balance_per_subaddress(account_index, req.strict);
-          unlocked_balance_per_subaddress_per_account[account_index] = m_wallet->unlocked_balance_per_subaddress(account_index, req.strict);
-        }
-      }
-      else
-      {
-        balance_per_subaddress_per_account[req.account_index] = m_wallet->balance_per_subaddress(req.account_index, req.strict);
-        unlocked_balance_per_subaddress_per_account[req.account_index] = m_wallet->unlocked_balance_per_subaddress(req.account_index, req.strict);
-      }
+      balance_per_subaddress_per_account[req.account_index] = m_wallet->balance_per_subaddress(req.account_index, req.strict);
+      unlocked_balance_per_subaddress_per_account[req.account_index] = m_wallet->unlocked_balance_per_subaddress(req.account_index, req.strict);
       std::vector<tools::wallet2::transfer_details> transfers;
       m_wallet->get_transfers(transfers);
       for (const auto& p : balance_per_subaddress_per_account)
@@ -720,7 +745,7 @@ namespace tools
         std::map<uint32_t, uint64_t> balance_per_subaddress = p.second;
         std::map<uint32_t, std::pair<uint64_t, std::pair<uint64_t, uint64_t>>> unlocked_balance_per_subaddress = unlocked_balance_per_subaddress_per_account[account_index];
         std::set<uint32_t> address_indices;
-        if (!req.all_accounts && !req.address_indices.empty())
+        if (!req.address_indices.empty())
         {
           address_indices = req.address_indices;
         }
@@ -759,32 +784,44 @@ namespace tools
     if (!m_wallet) return not_open(er);
     try
     {
-      THROW_WALLET_EXCEPTION_IF(req.account_index >= m_wallet->get_num_subaddress_accounts(), error::account_index_outofbound);
+      const size_t account_count = m_wallet->get_num_subaddress_accounts();
+      THROW_WALLET_EXCEPTION_IF(!req.all_accounts && req.account_index >= account_count, error::account_index_outofbound);
       res.addresses.clear();
-      std::vector<uint32_t> req_address_index;
-      if (req.address_index.empty())
-      {
-        for (uint32_t i = 0; i < m_wallet->get_num_subaddresses(req.account_index); ++i)
-          req_address_index.push_back(i);
-      }
-      else
-      {
-        req_address_index = req.address_index;
-      }
       tools::wallet2::transfer_container transfers;
       m_wallet->get_transfers(transfers);
-      for (uint32_t i : req_address_index)
+      std::unordered_set<cryptonote::subaddress_index> used_addresses;
+      if (req.all_accounts)
+        for (const auto& td : transfers)
+          used_addresses.insert(td.m_subaddr_index);
+
+      const size_t first_account = req.all_accounts ? 0 : req.account_index;
+      const size_t last_account = req.all_accounts ? account_count : first_account + 1;
+      for (size_t account = first_account; account < last_account; ++account)
       {
-        THROW_WALLET_EXCEPTION_IF(i >= m_wallet->get_num_subaddresses(req.account_index), error::address_index_outofbound);
-        res.addresses.resize(res.addresses.size() + 1);
-        auto& info = res.addresses.back();
-        const cryptonote::subaddress_index index = {req.account_index, i};
-        info.address = m_wallet->get_subaddress_as_str(index);
-        info.label = m_wallet->get_subaddress_label(index);
-        info.address_index = index.minor;
-        info.used = std::find_if(transfers.begin(), transfers.end(), [&](const tools::wallet2::transfer_details& td) { return td.m_subaddr_index == index; }) != transfers.end();
+        std::vector<uint32_t> address_indices;
+        if (req.all_accounts || req.address_index.empty())
+        {
+          for (uint32_t i = 0; i < m_wallet->get_num_subaddresses(account); ++i)
+            address_indices.push_back(i);
+        }
+        else
+          address_indices = req.address_index;
+
+        for (uint32_t i : address_indices)
+        {
+          THROW_WALLET_EXCEPTION_IF(i >= m_wallet->get_num_subaddresses(account), error::address_index_outofbound);
+          res.addresses.resize(res.addresses.size() + 1);
+          auto& info = res.addresses.back();
+          const cryptonote::subaddress_index index = {static_cast<uint32_t>(account), i};
+          info.address = m_wallet->get_subaddress_as_str(index);
+          info.label = m_wallet->get_subaddress_label(index);
+          info.account_index = index.major;
+          info.address_index = index.minor;
+          info.used = req.all_accounts ? used_addresses.count(index) != 0 :
+            std::find_if(transfers.begin(), transfers.end(), [&](const tools::wallet2::transfer_details& td) { return td.m_subaddr_index == index; }) != transfers.end();
+        }
       }
-      res.address = m_wallet->get_subaddress_as_str({req.account_index, 0});
+      res.address = m_wallet->get_subaddress_as_str({req.all_accounts ? 0 : req.account_index, 0});
     }
     catch (const std::exception& e)
     {
@@ -2363,7 +2400,7 @@ namespace tools
     {
       if (!filter || available != td.m_spent)
       {
-        if (req.account_index != td.m_subaddr_index.major || (!req.subaddr_indices.empty() && req.subaddr_indices.count(td.m_subaddr_index.minor) == 0))
+        if (!req.all_accounts && (req.account_index != td.m_subaddr_index.major || (!req.subaddr_indices.empty() && req.subaddr_indices.count(td.m_subaddr_index.minor) == 0)))
           continue;
 
         // wallet2::is_transfer_unlocked() needs a daemon connection to work. if it fails, assume locked

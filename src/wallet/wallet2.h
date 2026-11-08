@@ -926,6 +926,15 @@ private:
       uint64_t unlocked_balance = 0;
     };
     std::vector<account_balance> balances_per_account(const std::vector<uint32_t>& account_indices, bool strict);
+    struct subaddress_balance
+    {
+      uint64_t balance = 0;
+      uint64_t unlocked_balance = 0;
+      uint64_t blocks_to_unlock = 0;
+      uint64_t time_to_unlock = 0;
+      uint64_t num_unspent_outputs = 0;
+    };
+    std::vector<std::map<uint32_t, subaddress_balance>> balances_per_subaddress_all(bool strict);
     // locked & unlocked balance per subaddress of given or current subaddress account
     std::map<uint32_t, uint64_t> balance_per_subaddress(uint32_t subaddr_index_major, bool strict) const;
     std::map<uint32_t, std::pair<uint64_t, std::pair<uint64_t, uint64_t>>> unlocked_balance_per_subaddress(uint32_t subaddr_index_major, bool strict);
@@ -1428,7 +1437,7 @@ private:
 
     static uint64_t estimate_fee(bool use_per_byte_fee, bool use_rct, int n_inputs, int mixin, int n_outputs, size_t extra_size, bool bulletproof, bool clsag, bool bulletproof_plus, bool use_view_tags, uint64_t base_fee, uint64_t fee_quantization_mask);
     uint64_t get_fee_multiplier(fee_priority priority, fee_algorithm fee_algorithm = fee_algorithm::Unset);
-    uint64_t get_base_fee(fee_priority priority);
+    uint64_t get_base_fee(fee_priority priority, boost::optional<bool> use_per_byte_fee = boost::none);
     uint64_t get_base_fee();
     uint64_t get_fee_quantization_mask();
     uint64_t get_min_ring_size();
@@ -1442,7 +1451,7 @@ private:
       after casting from a type (PendingTransaction::FeePriority) which I don't want to touch.
     */
     fee_priority adjust_priority(uint32_t priority);
-    uint64_t get_base_fee(uint32_t);
+    uint64_t get_base_fee(uint32_t priority, boost::optional<bool> use_per_byte_fee = boost::none);
 
     bool is_unattended() const { return m_unattended; }
 
@@ -1582,6 +1591,7 @@ private:
     void handle_reorg(uint64_t height, std::map<std::pair<uint64_t, uint64_t>, size_t> *output_tracker_cache = NULL);
     void get_short_chain_history(std::list<crypto::hash>& ids, uint64_t granularity = 1) const;
     bool clear();
+    cryptonote::COMMAND_RPC_GET_TRANSACTIONS::entry get_tx_for_proof(const crypto::hash &txid, cryptonote::transaction &tx);
     void clear_soft(bool keep_key_images=false);
     /*
      * clear_user_data clears data created by the user, which is mostly data
