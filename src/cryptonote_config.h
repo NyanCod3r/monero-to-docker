@@ -147,6 +147,7 @@ static_assert(CURRENCY_PROTOCOL_MAX_OBJECT_REQUEST_COUNT >= BLOCKS_SYNCHRONIZING
 #define P2P_MAX_PEERS_IN_HANDSHAKE                      250
 #define P2P_DEFAULT_CONNECTION_TIMEOUT                  5000       //5 seconds
 #define P2P_DEFAULT_SOCKS_CONNECT_TIMEOUT               45         // seconds
+#define P2P_DEFAULT_I2P_SAM_CONNECT_TIMEOUT             60         // seconds
 #define P2P_DEFAULT_PING_CONNECTION_TIMEOUT             2000       //2 seconds
 #define P2P_DEFAULT_INVOKE_TIMEOUT                      60*2*1000  //2 minutes
 #define P2P_DEFAULT_HANDSHAKE_INVOKE_TIMEOUT            5000       //5 seconds
@@ -208,6 +209,13 @@ static_assert(CURRENCY_PROTOCOL_MAX_OBJECT_REQUEST_COUNT >= BLOCKS_SYNCHRONIZING
 
 #define BULLETPROOF_MAX_OUTPUTS                 16
 #define BULLETPROOF_PLUS_MAX_OUTPUTS            16
+
+#define FCMP_PLUS_PLUS_MAX_INPUTS               128
+#define FCMP_PLUS_PLUS_MAX_OUTPUTS              16
+
+// Limiting n layers ensures proof size is capped to a reasonable level when de-serializing a proof.
+// 12 layers means the tree can support over 100 quadrillion outputs
+#define FCMP_PLUS_PLUS_MAX_LAYERS               12
 
 #define CRYPTONOTE_PRUNING_STRIPE_SIZE          4096 // the smaller, the smoother the increase
 #define CRYPTONOTE_PRUNING_LOG_STRIPES          3 // the higher, the more space saved
