@@ -222,6 +222,9 @@ class TransferTest():
 
         daemon.generateblocks('42ey1afDFnn4886T7196doS9GPMzexD9gXpsZJDwVjeRVdFCSoHnv7KPbBeGpzJBzHRCAs9UxqeoyFQMYbqSWYTfJJQAWDm', 1)
         res = daemon.getlastblockheader()
+        coinbase_sum = daemon.get_coinbase_tx_sum(height, 1)
+        assert coinbase_sum.fee_amount == fee
+        assert coinbase_sum.emission_amount + coinbase_sum.fee_amount == res.block_header.reward
         running_balances[0] += res.block_header.reward
         self.wallet[0].refresh()
 
@@ -1597,6 +1600,11 @@ class TransferTest():
         assert balance_info_0_999['num_unspent_outputs'] == 1
         assert balance_info_0_999['blocks_to_unlock'] == 9
         assert balance_info_0_999['time_to_unlock'] == 0
+
+        selected = self.wallet[0].get_balance(address_indices = [0, 998, 999])['per_subaddress']
+        selected = {info['address_index']: info for info in selected}
+        assert selected[998]['balance'] == selected[998]['num_unspent_outputs'] == 0
+        assert selected[999] == balance_info_0_999
 
     def check_pool_scanner(self):
         daemon = Daemon()
