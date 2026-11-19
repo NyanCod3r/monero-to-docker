@@ -4704,6 +4704,7 @@ void wallet2::handle_reorg(uint64_t height, std::map<std::pair<uint64_t, uint64_
       error::wallet_internal_error, "Daemon claims reorg below last checkpoint");
 
   detached_blockchain_data dbd = detach_blockchain(height, output_tracker_cache);
+  m_skip_to_height = std::min(m_skip_to_height, height);
 
   if (m_background_syncing && height < m_background_sync_data.start_height)
     m_background_sync_data.start_height = height;
@@ -7365,7 +7366,7 @@ void wallet2::store_to(const std::string &path, const epee::wipeable_string &pas
   }
 
   // Save cache to new file. If storing to the same file, the temp path has the ".new" extension
-#ifdef WIN32
+#ifdef _WIN32
     // On Windows avoid using std::ofstream which does not work with UTF-8 filenames
     // The price to pay is temporary higher memory consumption for string stream + binary archive
     std::ostringstream oss;
