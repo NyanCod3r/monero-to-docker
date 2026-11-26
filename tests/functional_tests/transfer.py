@@ -648,6 +648,19 @@ class TransferTest():
         assert tx.in_pool
         assert not tx.double_spend_seen
 
+        self.wallet[1].refresh()
+        incoming = [entry for entry in self.wallet[1].get_transfers(refresh_pool = False).pool
+                    if entry.txid == txes[0][0]]
+        assert len(incoming) == 1
+        assert not incoming[0].double_spend_seen
+        pool_tx = [entry for entry in daemon.get_transaction_pool().transactions
+                   if entry.id_hash == txes[0][0]]
+        assert len(pool_tx) == 1
+        time.sleep(1.1)
+        baseline = daemon.get_blocks_fast(0, [], requested_info = 2)
+        assert baseline.pool_info_extent == 2
+        assert baseline.daemon_time > pool_tx[0].receive_time
+
         res = daemon.send_raw_transaction(txes[1][1])
         assert res.not_relayed == False
         assert res.low_mixin == False
@@ -664,6 +677,18 @@ class TransferTest():
         tx = [tx for tx in res.txs if tx.tx_hash == txes[0][0]][0]
         assert tx.in_pool
         assert tx.double_spend_seen
+
+        delta = daemon.get_blocks_fast(0, [], requested_info = 2,
+                                       pool_info_since = baseline.daemon_time)
+        delta_update = [entry for entry in delta.get('added_pool_txs', [])
+                        if entry.tx_hash.hex() == txes[0][0] and entry.double_spend_seen]
+        self.wallet[1].refresh()
+        incoming = [entry for entry in self.wallet[1].get_transfers(refresh_pool = False).pool
+                    if entry.txid == txes[0][0]]
+        assert len(incoming) == 1
+        assert delta.pool_info_extent == 1
+        assert delta_update
+        assert incoming[0].double_spend_seen
 
     def sweep_dust(self):
         print("Sweeping dust")
@@ -1746,6 +1771,11 @@ class TransferTest():
         assert any(t.tx_hash == txid and t.subaddr_index.major == 1 for t in all_accounts.transfers)
         addresses = self.wallet[1].get_address(all_accounts = True).addresses
         assert all(any(a.account_index == major and a.address_index == 0 and a.used for a in addresses) for major in (0, 1))
+        unused = self.wallet[1].create_address(account_index = 0).address
+        addresses = self.wallet[1].get_address(account_index = 0).addresses
+        assert any(a.address_index == 0 and a.used for a in addresses)
+        assert any(a.address == unused and not a.used for a in addresses)
+        assert self.wallet[1].get_address(account_index = 0, subaddresses = [0]).addresses[0].used
 
 if __name__ == '__main__':
     TransferTest().run_test()

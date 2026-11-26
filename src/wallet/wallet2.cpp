@@ -1871,8 +1871,6 @@ void wallet2::sort_scan_tx_entries(std::vector<process_tx_entry_t> &unsorted_tx_
   // for multisig wallets when they synchronize.
   std::set<uint64_t> entry_heights;
   std::set<uint64_t> entry_heights_requested;
-  COMMAND_RPC_GET_BLOCKS_BY_HEIGHT::request req;
-  COMMAND_RPC_GET_BLOCKS_BY_HEIGHT::response res;
   for (const auto & tx_info : unsorted_tx_entries)
   {
     if (!tx_info.tx_entry.in_pool && !tx_info.tx.is_coinbase())
@@ -1884,27 +1882,30 @@ void wallet2::sort_scan_tx_entries(std::vector<process_tx_entry_t> &unsorted_tx_
       }
       else if (entry_heights_requested.find(height) == entry_heights_requested.end())
       {
-        req.heights.push_back(height);
         entry_heights_requested.insert(height);
       }
     }
   }
 
-  {
-    const boost::lock_guard<boost::recursive_mutex> lock{m_daemon_rpc_mutex};
-    bool r = net_utils::invoke_http_bin("/getblocks_by_height.bin", req, res, *m_http_client, rpc_timeout);
-    THROW_WALLET_EXCEPTION_IF(!r, error::wallet_internal_error, "Failed to get blocks by height from daemon");
-    THROW_WALLET_EXCEPTION_IF(res.blocks.size() != req.heights.size(), error::wallet_internal_error, "Failed to get blocks by height from daemon");
-  }
-
   std::unordered_map<uint64_t, cryptonote::block> parsed_blocks;
-  for (size_t i = 0; i < res.blocks.size(); ++i)
+  for (const uint64_t height : entry_heights_requested)
   {
-    const auto &blk = res.blocks[i];
+    COMMAND_RPC_GET_BLOCK::request req = AUTO_VAL_INIT(req);
+    COMMAND_RPC_GET_BLOCK::response res = AUTO_VAL_INIT(res);
+    req.height = height;
+
+    {
+      const boost::lock_guard<boost::recursive_mutex> lock{m_daemon_rpc_mutex};
+      bool r = net_utils::invoke_http_json_rpc("/json_rpc", "getblock", req, res, *m_http_client, rpc_timeout);
+      THROW_WALLET_EXCEPTION_IF(!r || res.status != CORE_RPC_STATUS_OK, error::wallet_internal_error, "Failed to get block by height from daemon");
+    }
+    THROW_WALLET_EXCEPTION_IF(res.block_header.height != height, error::wallet_internal_error, "Daemon returned block at wrong height");
+
+    cryptonote::blobdata blob;
     cryptonote::block parsed_block;
-    THROW_WALLET_EXCEPTION_IF(!cryptonote::parse_and_validate_block_from_blob(blk.block, parsed_block),
+    THROW_WALLET_EXCEPTION_IF(!string_tools::parse_hexstr_to_binbuff(res.blob, blob) || !cryptonote::parse_and_validate_block_from_blob(blob, parsed_block),
         error::wallet_internal_error, "Failed to parse block");
-    parsed_blocks[req.heights[i]] = std::move(parsed_block);
+    parsed_blocks[height] = std::move(parsed_block);
   }
 
   // sort tx_entries in chronologically ascending order; pool txs to the back
@@ -3696,6 +3697,7 @@ void wallet2::pull_and_parse_next_blocks(bool first, bool try_incremental, uint6
     pull_blocks(first, try_incremental, start_height, blocks_start_height, short_chain_history, blocks, o_indices, current_height, process_pool_txs);
     THROW_WALLET_EXCEPTION_IF(blocks.size() != o_indices.size(), error::wallet_internal_error, "Mismatched sizes of blocks and o_indices");
 
+    boost::mutex error_lock;
     tools::threadpool& tpool = tools::threadpool::getInstanceForCompute();
     tools::threadpool::waiter waiter(tpool);
     parsed_blocks.resize(blocks.size());
@@ -3732,7 +3734,6 @@ void wallet2::pull_and_parse_next_blocks(bool first, bool try_incremental, uint6
       parsed_blocks[i].o_indices = std::move(o_indices[i]);
     }
 
-    boost::mutex error_lock;
     for (size_t i = 0; i < blocks.size(); ++i)
     {
       parsed_blocks[i].txes.resize(blocks[i].txs.size());
@@ -4088,12 +4089,22 @@ void wallet2::update_pool_state_from_pool_data(bool incremental, const std::vect
   payments_tx_hashes.reserve(m_unconfirmed_payments.size());
   for (const auto &p: m_unconfirmed_payments)
     payments_tx_hashes.insert(p.second.m_pd.m_tx_hash);
+  std::unordered_map<crypto::hash, bool> double_spend_seen;
   for (const auto &pool_tx: added_pool_txs)
   {
-    if (accept_pool_tx_for_processing(std::get<1>(pool_tx), payments_tx_hashes))
+    const crypto::hash &txid = std::get<1>(pool_tx);
+    if (payments_tx_hashes.count(txid))
+      double_spend_seen.emplace(txid, std::get<2>(pool_tx));
+    if (accept_pool_tx_for_processing(txid, payments_tx_hashes))
     {
       process_txs.push_back(pool_tx);
     }
+  }
+  for (auto &payment : m_unconfirmed_payments)
+  {
+    const auto it = double_spend_seen.find(payment.second.m_pd.m_tx_hash);
+    if (it != double_spend_seen.end())
+      payment.second.m_double_spend_seen |= it->second;
   }
 
   MTRACE("update_pool_state_from_pool_data end");
@@ -12336,7 +12347,7 @@ uint64_t wallet2::get_num_rct_outputs()
   {
     const boost::lock_guard<boost::recursive_mutex> lock{m_daemon_rpc_mutex};
     bool r = net_utils::invoke_http_json_rpc("/json_rpc", "get_output_histogram", req_t, resp_t, *m_http_client, rpc_timeout);
-    THROW_ON_RPC_RESPONSE_ERROR(r, {}, resp_t, "get_output_histogram", error::get_histogram_error, resp_t.status);
+    THROW_ON_RPC_RESPONSE_ERROR(r, {}, resp_t, "get_output_histogram", error::get_histogram_error, get_rpc_status(m_trusted_daemon, resp_t.status));
     THROW_WALLET_EXCEPTION_IF(resp_t.histogram.size() != 1, error::get_histogram_error, "Expected exactly one response");
     THROW_WALLET_EXCEPTION_IF(resp_t.histogram[0].amount != 0, error::get_histogram_error, "Expected 0 amount");
   }
@@ -15924,48 +15935,23 @@ uint64_t wallet2::get_blockchain_height_by_timestamp(uint64_t timestamp_target) 
     throw std::runtime_error("failed to get blockchain height");
   }
   height_max--;
+
+  const auto get_timestamp = [this](uint64_t height)
+  {
+    cryptonote::block_header_response block_header;
+    if (const auto error = m_node_rpc_proxy.get_block_header_by_height(height, block_header))
+      throw std::runtime_error("failed to get block header at height " + std::to_string(height)
+        + ": " + get_rpc_status(m_trusted_daemon, *error));
+    return block_header.timestamp;
+  };
+
+  uint64_t timestamp_min = get_timestamp(height_min);
+  uint64_t timestamp_max = height_max == height_min ? timestamp_min : get_timestamp(height_max);
   // the range halves every iteration, so 64 steps always suffice
   for (unsigned iterations = 0; iterations < 64; ++iterations)
   {
-    COMMAND_RPC_GET_BLOCKS_BY_HEIGHT::request req;
-    COMMAND_RPC_GET_BLOCKS_BY_HEIGHT::response res;
-    uint64_t height_mid = height_min + (height_max - height_min) / 2;
-    req.heights =
-    {
-      height_min,
-      height_mid,
-      height_max
-    };
-
-    bool r;
-    {
-      const boost::lock_guard<boost::recursive_mutex> lock{m_daemon_rpc_mutex};
-      r = net_utils::invoke_http_bin("/getblocks_by_height.bin", req, res, *m_http_client, rpc_timeout);
-    }
-
-    if (!r || res.status != CORE_RPC_STATUS_OK)
-    {
-      std::ostringstream oss;
-      oss << "failed to get blocks by heights: ";
-      for (auto height : req.heights)
-        oss << height << ' ';
-      oss << endl << "reason: ";
-      if (!r)
-        oss << "possibly lost connection to daemon";
-      else if (res.status == CORE_RPC_STATUS_BUSY)
-        oss << "daemon is busy";
-      else
-        oss << get_rpc_status(m_trusted_daemon, res.status);
-      throw std::runtime_error(oss.str());
-    }
-    cryptonote::block blk_min, blk_mid, blk_max;
-    if (res.blocks.size() < 3) throw std::runtime_error("Not enough blocks returned from daemon");
-    if (!parse_and_validate_block_from_blob(res.blocks[0].block, blk_min)) throw std::runtime_error("failed to parse blob at height " + std::to_string(height_min));
-    if (!parse_and_validate_block_from_blob(res.blocks[1].block, blk_mid)) throw std::runtime_error("failed to parse blob at height " + std::to_string(height_mid));
-    if (!parse_and_validate_block_from_blob(res.blocks[2].block, blk_max)) throw std::runtime_error("failed to parse blob at height " + std::to_string(height_max));
-    uint64_t timestamp_min = blk_min.timestamp;
-    uint64_t timestamp_mid = blk_mid.timestamp;
-    uint64_t timestamp_max = blk_max.timestamp;
+    const uint64_t height_mid = height_min + (height_max - height_min) / 2;
+    const uint64_t timestamp_mid = height_mid == height_min ? timestamp_min : get_timestamp(height_mid);
     if (!(timestamp_min <= timestamp_mid && timestamp_mid <= timestamp_max))
     {
       // the timestamps are not in the chronological order. 
@@ -15981,9 +15967,15 @@ uint64_t wallet2::get_blockchain_height_by_timestamp(uint64_t timestamp_target) 
       return height_min;
     }
     if (timestamp_target <= timestamp_mid)
+    {
       height_max = height_mid;
+      timestamp_max = timestamp_mid;
+    }
     else
+    {
       height_min = height_mid;
+      timestamp_min = timestamp_mid;
+    }
     if (height_max - height_min <= 2 * 24 * 30)        // don't divide the height range finer than two days
     {
       return height_min;
