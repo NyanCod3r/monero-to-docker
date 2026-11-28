@@ -190,9 +190,7 @@ namespace nodetool
           m_proxy_address(),
           m_current_number_of_out_peers(0),
           m_current_number_of_in_peers(0),
-          m_seed_nodes_lock(),
-          m_can_pingback(false),
-          m_seed_nodes_initialized(false)
+          m_can_pingback(false)
       {
         set_config_defaults();
       }
@@ -212,9 +210,7 @@ namespace nodetool
           m_proxy_address(),
           m_current_number_of_out_peers(0),
           m_current_number_of_in_peers(0),
-          m_seed_nodes_lock(),
-          m_can_pingback(false),
-          m_seed_nodes_initialized(false)
+          m_can_pingback(false)
       {
         set_config_defaults();
       }
@@ -241,9 +237,7 @@ namespace nodetool
 
       std::atomic<unsigned int> m_current_number_of_out_peers;
       std::atomic<unsigned int> m_current_number_of_in_peers;
-      boost::shared_mutex m_seed_nodes_lock;
       bool m_can_pingback;
-      bool m_seed_nodes_initialized;
 
       /* `m_our_address` is set from the I2P SAM control socket's strand after the destination
          is established, which races with reads from other threads once the zone's io_context
@@ -289,7 +283,6 @@ namespace nodetool
         m_offline(false),
         is_closing(false),
         m_network_id(),
-        m_enable_dns_seed_nodes(true),
         max_connections(1)
     {}
     virtual ~node_server();
@@ -321,24 +314,25 @@ namespace nodetool
     uint32_t get_max_in_public_peers() const;
     virtual bool block_host(epee::net_utils::network_address address, time_t seconds = P2P_IP_BLOCKTIME, bool add_only = false);
     virtual bool unblock_host(const epee::net_utils::network_address &address);
-    virtual bool block_subnet(const epee::net_utils::ipv4_network_subnet &subnet, time_t seconds = P2P_IP_BLOCKTIME);
+    virtual bool block_subnet(const epee::net_utils::ipv4_network_subnet &subnet, time_t seconds = P2P_IP_BLOCKTIME, bool add_only = false);
     virtual bool unblock_subnet(const epee::net_utils::ipv4_network_subnet &subnet);
+    virtual bool block_subnet(const epee::net_utils::ipv6_network_subnet &subnet, time_t seconds = P2P_IP_BLOCKTIME, bool add_only = false);
+    virtual bool unblock_subnet(const epee::net_utils::ipv6_network_subnet &subnet);
     virtual bool clear_bans();
     virtual bool is_host_blocked(const epee::net_utils::network_address &address, time_t *seconds) { CRITICAL_REGION_LOCAL(m_blocked_hosts_lock); return !is_remote_host_allowed(address, seconds); }
     virtual std::map<std::string, time_t> get_blocked_hosts() { CRITICAL_REGION_LOCAL(m_blocked_hosts_lock); return m_blocked_hosts; }
     virtual std::map<epee::net_utils::ipv4_network_subnet, time_t> get_blocked_subnets() { CRITICAL_REGION_LOCAL(m_blocked_hosts_lock); return m_blocked_subnets; }
+    virtual std::map<epee::net_utils::ipv6_network_subnet, time_t> get_blocked_ipv6_subnets() { CRITICAL_REGION_LOCAL(m_blocked_hosts_lock); return m_blocked_ipv6_subnets; }
 
     virtual void add_used_stripe_peer(const typename t_payload_net_handler::connection_context &context);
     virtual void remove_used_stripe_peer(const typename t_payload_net_handler::connection_context &context);
     virtual void clear_used_stripe_peers();
 
   private:
-    const std::vector<std::string> m_seed_nodes_list =
-    { "seeds.moneroseeds.se"
-    , "seeds.moneroseeds.ae.org"
-    , "seeds.moneroseeds.ch"
-    , "seeds.moneroseeds.li"
-    };
+    template<typename Subnet>
+    bool block_subnet_impl(std::map<Subnet, time_t> &blocked_subnets, const Subnet &subnet, time_t seconds, bool add_only);
+    template<typename Subnet>
+    bool unblock_subnet_impl(std::map<Subnet, time_t> &blocked_subnets, const Subnet &subnet);
 
     bool islimitup=false;
     bool islimitdown=false;
@@ -420,9 +414,8 @@ namespace nodetool
     bool is_addr_recently_failed(const epee::net_utils::network_address& addr, time_t forget_seconds = P2P_FAILED_ADDR_FORGET_SECONDS);
     bool is_priority_node(const epee::net_utils::network_address& na);
     std::set<std::string> get_ip_seed_nodes() const;
-    std::set<std::string> get_dns_seed_nodes();
-    std::set<std::string> get_seed_nodes(epee::net_utils::zone);
-    bool connect_to_seed(epee::net_utils::zone);
+    std::set<std::string> get_seed_nodes(epee::net_utils::zone) const;
+    bool connect_to_seed(const network_zone& zone);
 
     template <class Container>
     bool connect_to_peerlist(const Container& peers);
@@ -493,7 +486,6 @@ namespace nodetool
 
     std::list<epee::net_utils::network_address>   m_priority_peers;
     std::vector<epee::net_utils::network_address> m_exclusive_peers;
-    std::atomic_flag m_fallback_seed_nodes_added = ATOMIC_FLAG_INIT;
     std::vector<nodetool::peerlist_entry> m_command_line_peers;
     //keep connections to initiate some interactions
 
@@ -517,6 +509,7 @@ namespace nodetool
     epee::critical_section m_blocked_hosts_lock; // for both hosts and subnets
     std::map<std::string, time_t> m_blocked_hosts;
     std::map<epee::net_utils::ipv4_network_subnet, time_t> m_blocked_subnets;
+    std::map<epee::net_utils::ipv6_network_subnet, time_t> m_blocked_ipv6_subnets;
 
     epee::critical_section m_host_fails_score_lock;
     std::map<std::string, uint64_t> m_host_fails_score;
@@ -529,7 +522,6 @@ namespace nodetool
 
     epee::net_utils::ssl_support_t m_ssl_support;
 
-    bool m_enable_dns_seed_nodes;
     bool m_enable_dns_blocklist;
 
     uint32_t max_connections;

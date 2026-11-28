@@ -2390,7 +2390,8 @@ void BlockchainLMDB::open(const std::string& filename, const int db_flags)
   auto get_result = mdb_get(txn, m_properties, &k, &v);
   if(get_result == MDB_SUCCESS)
   {
-    const uint32_t db_version = *(const uint32_t*)v.mv_data;
+    uint32_t db_version;
+    memcpy(&db_version, v.mv_data, sizeof(db_version));
     if (db_version > VERSION)
     {
       MWARNING("Existing lmdb database was made by a later version (" << db_version << "). We don't know how it will change yet.");
@@ -2631,6 +2632,8 @@ std::string BlockchainLMDB::get_db_name() const
 
 void BlockchainLMDB::add_txpool_tx(const crypto::hash &txid, const cryptonote::blobdata_ref &blob, const txpool_tx_meta_t &meta)
 {
+  static_assert(alignof(txpool_tx_meta_t) == alignof(std::uint64_t), "txpool_tx_meta_t will be unaligned in LMDB DB");
+
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
   check_open();
   mdb_txn_cursors *m_cursors = &m_wcursors;

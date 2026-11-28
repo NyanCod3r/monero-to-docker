@@ -42,7 +42,6 @@
 #include <atomic>
 #include <functional>
 #include <limits>
-#include <memory>
 #include <tuple>
 #include <vector>
 
@@ -63,67 +62,100 @@
 #undef MONERO_DEFAULT_LOG_CATEGORY
 #define MONERO_DEFAULT_LOG_CATEGORY "net.p2p"
 
-#define MIN_WANTED_SEED_NODES 12
-
 namespace nodetool
 {
   namespace
   {
-    uint64_t ipv4_subnet_size(const uint8_t mask)
-    {
-      CHECK_AND_ASSERT_THROW_MES(mask <= 32, "invalid IPv4 subnet mask");
-      return mask == 0 ? (uint64_t{1} << 32) : (uint64_t{1} << (32 - mask));
-    }
+    template<typename Subnet>
+    struct subnet_traits;
 
-    uint64_t ipv4_subnet_first(const epee::net_utils::ipv4_network_subnet &subnet)
+    template<>
+    struct subnet_traits<epee::net_utils::ipv4_network_subnet>
     {
-      return SWAP32BE(subnet.subnet());
-    }
+      using address_type = epee::net_utils::ipv4_network_address;
+      static constexpr uint8_t bits = 32;
 
-    uint64_t ipv4_subnet_last(const epee::net_utils::ipv4_network_subnet &subnet)
+      static epee::net_utils::ipv4_network_subnet upper_half(
+        const epee::net_utils::ipv4_network_subnet &subnet, const uint8_t child_mask)
+      {
+        const uint32_t bit = SWAP32BE(uint32_t{1} << (32 - child_mask));
+        const epee::net_utils::ipv4_network_subnet child{subnet.subnet() | bit, child_mask};
+        return {child.subnet(), child_mask};
+      }
+    };
+
+    template<>
+    struct subnet_traits<epee::net_utils::ipv6_network_subnet>
     {
-      return ipv4_subnet_first(subnet) + ipv4_subnet_size(subnet.mask()) - 1;
-    }
+      using address_type = epee::net_utils::ipv6_network_address;
+      static constexpr uint8_t bits = 128;
 
-    epee::net_utils::ipv4_network_subnet make_ipv4_subnet(const uint64_t first, const uint8_t mask)
+      static epee::net_utils::ipv6_network_subnet upper_half(
+        const epee::net_utils::ipv6_network_subnet &subnet, const uint8_t child_mask)
+      {
+        auto bytes = subnet.subnet().to_bytes();
+        const uint8_t bit = subnet.mask();
+        bytes[bit / 8] |= static_cast<uint8_t>(0x80u >> (bit % 8));
+        return {boost::asio::ip::address_v6{bytes}, child_mask};
+      }
+    };
+
+    template<typename Subnet>
+    void subtract_subnet(const Subnet &blocked, const Subnet &removed, std::vector<Subnet> &result)
     {
-      return {SWAP32BE(static_cast<uint32_t>(first)), mask};
-    }
-
-    void subtract_ipv4_subnet(
-      const epee::net_utils::ipv4_network_subnet &blocked,
-      const epee::net_utils::ipv4_network_subnet &removed,
-      std::vector<epee::net_utils::ipv4_network_subnet> &result)
-    {
-      const uint64_t blocked_first = ipv4_subnet_first(blocked);
-      const uint64_t blocked_last = ipv4_subnet_last(blocked);
-      const uint64_t removed_first = ipv4_subnet_first(removed);
-      const uint64_t removed_last = ipv4_subnet_last(removed);
-
-      if (removed_last < blocked_first || blocked_last < removed_first)
+      if (removed.mask() <= blocked.mask())
+      {
+        if (Subnet{blocked.subnet(), removed.mask()} != removed)
+          result.push_back(blocked);
+        return;
+      }
+      if (Subnet{removed.subnet(), blocked.mask()} != blocked)
       {
         result.push_back(blocked);
         return;
       }
-      if (removed_first <= blocked_first && blocked_last <= removed_last)
-        return;
 
       const uint8_t child_mask = blocked.mask() + 1;
-      CHECK_AND_ASSERT_THROW_MES(child_mask <= 32, "invalid IPv4 subnet split");
-
-      const uint64_t child_size = ipv4_subnet_size(child_mask);
-      subtract_ipv4_subnet(make_ipv4_subnet(blocked_first, child_mask), removed, result);
-      subtract_ipv4_subnet(make_ipv4_subnet(blocked_first + child_size, child_mask), removed, result);
+      subtract_subnet(Subnet{blocked.subnet(), child_mask}, removed, result);
+      subtract_subnet(subnet_traits<Subnet>::upper_half(blocked, child_mask), removed, result);
     }
 
-    void emplace_blocked_subnet(
-      std::map<epee::net_utils::ipv4_network_subnet, time_t> &subnets,
-      const epee::net_utils::ipv4_network_subnet &subnet,
-      const time_t limit)
+    template<typename Subnet>
+    void emplace_blocked_subnet(std::map<Subnet, time_t> &subnets, const Subnet &subnet, const time_t limit)
     {
       auto entry = subnets.find(subnet);
       if (entry == subnets.end() || entry->second < limit)
         subnets[subnet] = limit;
+    }
+
+    template<typename Address, typename Subnet>
+    bool is_address_allowed(const Address &address, std::map<Subnet, time_t> &subnets, const time_t now, time_t *t)
+    {
+      for (auto i = subnets.begin(); i != subnets.end(); )
+      {
+        if (now >= i->second)
+        {
+          MCLOG_CYAN(el::Level::Info, "global", "Subnet " << i->first.host_str() << " unblocked.");
+          i = subnets.erase(i);
+          continue;
+        }
+        if (i->first.matches(address))
+        {
+          if (t)
+            *t = i->second - now;
+          return false;
+        }
+        ++i;
+      }
+      return true;
+    }
+
+    template<typename Address, typename Subnet>
+    bool matches_blocked_subnet(const Address &address, const std::map<Subnet, time_t> &subnets)
+    {
+      return std::any_of(subnets.begin(), subnets.end(), [&address](const auto &subnet) {
+        return subnet.first.matches(address);
+      });
     }
   }
 
@@ -292,28 +324,10 @@ namespace nodetool
       }
     }
 
-    // manually loop in subnets
     if (address.get_type_id() == epee::net_utils::address_type::ipv4)
-    {
-      auto ipv4_address = address.template as<epee::net_utils::ipv4_network_address>();
-      std::map<epee::net_utils::ipv4_network_subnet, time_t>::iterator it;
-      for (it = m_blocked_subnets.begin(); it != m_blocked_subnets.end(); )
-      {
-        if (now >= it->second)
-        {
-          MCLOG_CYAN(el::Level::Info, "global", "Subnet " << it->first.host_str() << " unblocked.");
-          it = m_blocked_subnets.erase(it);
-          continue;
-        }
-        if (it->first.matches(ipv4_address))
-        {
-          if (t)
-            *t = it->second - now;
-          return false;
-        }
-        ++it;
-      }
-    }
+      return is_address_allowed(address.template as<epee::net_utils::ipv4_network_address>(), m_blocked_subnets, now, t);
+    if (address.get_type_id() == epee::net_utils::address_type::ipv6)
+      return is_address_allowed(address.template as<epee::net_utils::ipv6_network_address>(), m_blocked_ipv6_subnets, now, t);
 
     // not found in hosts or subnets, allowed
     return true;
@@ -361,20 +375,14 @@ namespace nodetool
       m_blocked_hosts[host_str] = limit;
 
       // if the host was already blocked due to being in a blocked subnet, let it be silent
-      bool matches_blocked_subnet = false;
+      bool blocked_by_subnet = false;
       if (addr.get_type_id() == epee::net_utils::address_type::ipv4)
-      {
-        auto ipv4_address = addr.template as<epee::net_utils::ipv4_network_address>();
-        for (auto jt = m_blocked_subnets.begin(); jt != m_blocked_subnets.end(); ++jt)
-        {
-          if (jt->first.matches(ipv4_address))
-          {
-            matches_blocked_subnet = true;
-            break;
-          }
-        }
-      }
-      if (!matches_blocked_subnet)
+        blocked_by_subnet = matches_blocked_subnet(
+          addr.template as<epee::net_utils::ipv4_network_address>(), m_blocked_subnets);
+      else if (addr.get_type_id() == epee::net_utils::address_type::ipv6)
+        blocked_by_subnet = matches_blocked_subnet(
+          addr.template as<epee::net_utils::ipv6_network_address>(), m_blocked_ipv6_subnets);
+      if (!blocked_by_subnet)
         added = true;
     }
     else if (it->second < limit || !add_only)
@@ -435,8 +443,11 @@ namespace nodetool
   }
   //-----------------------------------------------------------------------------------
   template<class t_payload_net_handler>
-  bool node_server<t_payload_net_handler>::block_subnet(const epee::net_utils::ipv4_network_subnet &subnet, time_t seconds)
+  template<typename Subnet>
+  bool node_server<t_payload_net_handler>::block_subnet_impl(
+    std::map<Subnet, time_t> &blocked_subnets, const Subnet &subnet, time_t seconds, bool add_only)
   {
+    using address_type = typename subnet_traits<Subnet>::address_type;
     const time_t now = time(nullptr);
 
     CRITICAL_REGION_LOCAL(m_blocked_hosts_lock);
@@ -445,8 +456,11 @@ namespace nodetool
       limit = std::numeric_limits<time_t>::max();
     else
       limit = now + seconds;
-    const bool added = m_blocked_subnets.find(subnet) == m_blocked_subnets.end();
-    m_blocked_subnets[subnet] = limit;
+    const bool added = blocked_subnets.find(subnet) == blocked_subnets.end();
+    if (add_only)
+      emplace_blocked_subnet(blocked_subnets, subnet, limit);
+    else
+      blocked_subnets[subnet] = limit;
 
     // drop any connection to that subnet. This should only have to look into
     // the zone related to the connection, but really make sure everything is
@@ -456,10 +470,9 @@ namespace nodetool
     {
       zone.second.m_net_server.get_config_object().foreach_connection([&](const p2p_connection_context& cntxt)
       {
-        if (cntxt.m_remote_address.get_type_id() != epee::net_utils::ipv4_network_address::get_type_id())
+        if (cntxt.m_remote_address.get_type_id() != address_type::get_type_id())
           return true;
-        auto ipv4_address = cntxt.m_remote_address.template as<epee::net_utils::ipv4_network_address>();
-        if (subnet.matches(ipv4_address))
+        if (subnet.matches(cntxt.m_remote_address.template as<address_type>()))
         {
           conns.push_back(cntxt.m_connection_id);
         }
@@ -470,9 +483,9 @@ namespace nodetool
 
       for (int i = 0; i < 2; ++i)
         zone.second.m_peerlist.filter(i == 0, [&subnet](const peerlist_entry &pe){
-          if (pe.adr.get_type_id() != epee::net_utils::ipv4_network_address::get_type_id())
+          if (pe.adr.get_type_id() != address_type::get_type_id())
             return false;
-          return subnet.matches(pe.adr.as<const epee::net_utils::ipv4_network_address>());
+          return subnet.matches(pe.adr.as<const address_type>());
         });
 
       conns.clear();
@@ -486,16 +499,32 @@ namespace nodetool
   }
   //-----------------------------------------------------------------------------------
   template<class t_payload_net_handler>
-  bool node_server<t_payload_net_handler>::unblock_subnet(const epee::net_utils::ipv4_network_subnet &subnet)
+  bool node_server<t_payload_net_handler>::block_subnet(const epee::net_utils::ipv4_network_subnet &subnet, time_t seconds, bool add_only)
   {
+    return block_subnet_impl(m_blocked_subnets, subnet, seconds, add_only);
+  }
+  //-----------------------------------------------------------------------------------
+  template<class t_payload_net_handler>
+  bool node_server<t_payload_net_handler>::block_subnet(const epee::net_utils::ipv6_network_subnet &subnet, time_t seconds, bool add_only)
+  {
+    return block_subnet_impl(m_blocked_ipv6_subnets, subnet, seconds, add_only);
+  }
+  //-----------------------------------------------------------------------------------
+  template<class t_payload_net_handler>
+  template<typename Subnet>
+  bool node_server<t_payload_net_handler>::unblock_subnet_impl(
+    std::map<Subnet, time_t> &blocked_subnets, const Subnet &subnet)
+  {
+    using traits = subnet_traits<Subnet>;
+    using address_type = typename traits::address_type;
     CRITICAL_REGION_LOCAL(m_blocked_hosts_lock);
     bool unblocked = false;
 
     for (auto i = m_blocked_hosts.begin(); i != m_blocked_hosts.end(); )
     {
       auto address = net::get_network_address(i->first, 0);
-      if (address && address->get_type_id() == epee::net_utils::ipv4_network_address::get_type_id()
-        && subnet.matches(address->template as<epee::net_utils::ipv4_network_address>()))
+      if (address && address->get_type_id() == address_type::get_type_id()
+        && subnet.matches(address->template as<address_type>()))
       {
         i = m_blocked_hosts.erase(i);
         unblocked = true;
@@ -504,33 +533,46 @@ namespace nodetool
         ++i;
     }
 
-    std::map<epee::net_utils::ipv4_network_subnet, time_t> blocked_subnets;
-    std::vector<epee::net_utils::ipv4_network_subnet> remaining;
-    remaining.reserve(32);
-    for (const auto &blocked_subnet : m_blocked_subnets)
+    std::map<Subnet, time_t> remaining_subnets;
+    std::vector<Subnet> remaining;
+    remaining.reserve(traits::bits);
+    for (const auto &blocked_subnet : blocked_subnets)
     {
       remaining.clear();
-      subtract_ipv4_subnet(blocked_subnet.first, subnet, remaining);
+      subtract_subnet(blocked_subnet.first, subnet, remaining);
       if (remaining.size() != 1 || remaining.front() != blocked_subnet.first)
         unblocked = true;
       for (const auto &entry : remaining)
-        emplace_blocked_subnet(blocked_subnets, entry, blocked_subnet.second);
+        emplace_blocked_subnet(remaining_subnets, entry, blocked_subnet.second);
     }
 
     if (!unblocked)
       return false;
-    m_blocked_subnets.swap(blocked_subnets);
+    blocked_subnets.swap(remaining_subnets);
     MCLOG_CYAN(el::Level::Info, "global", "Subnet " << subnet.str() << " unblocked.");
     return true;
+  }
+  //-----------------------------------------------------------------------------------
+  template<class t_payload_net_handler>
+  bool node_server<t_payload_net_handler>::unblock_subnet(const epee::net_utils::ipv4_network_subnet &subnet)
+  {
+    return unblock_subnet_impl(m_blocked_subnets, subnet);
+  }
+  //-----------------------------------------------------------------------------------
+  template<class t_payload_net_handler>
+  bool node_server<t_payload_net_handler>::unblock_subnet(const epee::net_utils::ipv6_network_subnet &subnet)
+  {
+    return unblock_subnet_impl(m_blocked_ipv6_subnets, subnet);
   }
   //-----------------------------------------------------------------------------------
   template<class t_payload_net_handler>
   bool node_server<t_payload_net_handler>::clear_bans()
   {
     CRITICAL_REGION_LOCAL(m_blocked_hosts_lock);
-    const bool had_bans = !m_blocked_hosts.empty() || !m_blocked_subnets.empty();
+    const bool had_bans = !m_blocked_hosts.empty() || !m_blocked_subnets.empty() || !m_blocked_ipv6_subnets.empty();
     m_blocked_hosts.clear();
     m_blocked_subnets.clear();
+    m_blocked_ipv6_subnets.clear();
     if (had_bans)
       MCLOG_CYAN(el::Level::Info, "global", "All bans cleared.");
     return had_bans;
@@ -635,8 +677,6 @@ namespace nodetool
 
     if (command_line::has_arg(vm, arg_p2p_seed_node))
     {
-      boost::unique_lock<boost::shared_mutex> lock(public_zone.m_seed_nodes_lock);
-
       if (!parse_peers_and_add_to_container(vm, arg_p2p_seed_node, public_zone.m_seed_nodes))
         return false;
     }
@@ -677,13 +717,19 @@ namespace nodetool
           block_subnet(*subnet, std::numeric_limits<time_t>::max());
           continue;
         }
+        auto ipv6_subnet = net::get_ipv6_subnet_address(line);
+        if (ipv6_subnet)
+        {
+          block_subnet(*ipv6_subnet, std::numeric_limits<time_t>::max());
+          continue;
+        }
         const expect<epee::net_utils::network_address> parsed_addr = net::get_network_address(line, 0);
         if (parsed_addr)
         {
           block_host(*parsed_addr, std::numeric_limits<time_t>::max());
           continue;
         }
-        MERROR("Invalid IP address or IPv4 subnet: " << line);
+        MERROR("Invalid IP address or subnet: " << line);
       }
     }
 
@@ -1026,132 +1072,12 @@ namespace nodetool
   }
   //-----------------------------------------------------------------------------------
   template<class t_payload_net_handler>
-  std::set<std::string> node_server<t_payload_net_handler>::get_dns_seed_nodes()
-  {
-    if (!m_exclusive_peers.empty() || m_offline)
-    {
-      return {};
-    }
-    if (m_nettype == cryptonote::TESTNET)
-    {
-      return get_ip_seed_nodes();
-    }
-    if (m_nettype == cryptonote::STAGENET)
-    {
-      return get_ip_seed_nodes();
-    }
-    if (m_nettype == cryptonote::FAKECHAIN)
-    {
-      return {};
-    }
-    if (!m_enable_dns_seed_nodes)
-    {
-      // TODO: a domain can be set through socks, so that the remote side does the lookup for the DNS seed nodes.
-      m_fallback_seed_nodes_added.test_and_set();
-      return get_ip_seed_nodes();
-    }
-
-    std::set<std::string> full_addrs;
-
-    // for each hostname in the seed nodes list, attempt to DNS resolve and
-    // add the result addresses as seed nodes
-    // TODO: at some point add IPv6 support, but that won't be relevant
-    // for some time yet.
-
-    struct frame_t
-    {
-      std::vector<std::vector<std::string>> dns_results;
-      boost::mutex sync;
-    };
-
-    const auto frame = std::make_shared<frame_t>();
-    frame->dns_results.resize(m_seed_nodes_list.size());
-
-    // some libc implementation provide only a very small stack
-    // for threads, e.g. musl only gives +- 80kb, which is not
-    // enough to do a resolve with unbound. we request a stack
-    // of 1 mb, which should be plenty
-    boost::thread::attributes thread_attributes;
-    thread_attributes.set_stack_size(1024*1024);
-
-    std::list<boost::thread> dns_threads;
-    uint64_t result_index = 0;
-    const std::weak_ptr<frame_t> frame_weak{frame};
-    for (const std::string& addr_str : m_seed_nodes_list)
-    {
-      boost::thread th = boost::thread(thread_attributes, [frame_weak, addr_str, result_index]
-      {
-        MDEBUG("dns_threads[" << result_index << "] created for: " << addr_str);
-        bool avail, valid;
-        std::vector<std::string> addr_list = tools::DNSResolver::instance().get_ipv4(addr_str, avail, valid);
-        if (avail && !valid)
-        {
-          MWARNING("DNSSEC validation failed for a DNS seed node: " << addr_str << ", ignoring " << addr_list.size() << " results: " << boost::algorithm::join(addr_list, ", "));
-          addr_list.clear();
-        }
-        MINFO("dns_threads[" << result_index << "] addr_str: " << addr_str << "  number of results: " << addr_list.size());
-        const auto frame = frame_weak.lock();
-        if (frame)
-        {
-          const boost::lock_guard<boost::mutex> lock{frame->sync};
-          frame->dns_results.at(result_index) = std::move(addr_list);
-        }
-      });
-
-      dns_threads.push_back(std::move(th));
-      ++result_index;
-    }
-
-    MDEBUG("dns_threads created, now waiting for completion or timeout of " << CRYPTONOTE_DNS_TIMEOUT_MS << "ms");
-    boost::chrono::system_clock::time_point deadline = boost::chrono::system_clock::now() + boost::chrono::milliseconds(CRYPTONOTE_DNS_TIMEOUT_MS);
-    uint64_t i = 0;
-    for (boost::thread& th : dns_threads)
-    {
-      if (! th.try_join_until(deadline))
-      {
-        MWARNING("dns_threads[" << i << "] timed out");
-        th.detach();
-      }
-      ++i;
-    }
-
-    i = 0;
-    const boost::lock_guard<boost::mutex> lock{frame->sync};
-    for (const auto& result : frame->dns_results)
-    {
-      MDEBUG("DNS lookup for " << m_seed_nodes_list[i] << ": " << result.size() << " results");
-      // if no results for node, thread's lookup likely timed out
-      if (result.size())
-      {
-        for (const auto& addr_string : result)
-          full_addrs.insert(addr_string + ":" + std::to_string(cryptonote::get_config(m_nettype).P2P_DEFAULT_PORT));
-      }
-      ++i;
-    }
-
-    // append the fallback nodes if we have too few seed nodes to start with
-    if (full_addrs.size() < MIN_WANTED_SEED_NODES)
-    {
-      if (full_addrs.empty())
-        MINFO("DNS seed node lookup either timed out or failed, falling back to defaults");
-      else
-        MINFO("Not enough DNS seed nodes found, using fallback defaults too");
-
-      for (const auto &peer: get_ip_seed_nodes())
-        full_addrs.insert(peer);
-      m_fallback_seed_nodes_added.test_and_set();
-    }
-
-    return full_addrs;
-  }
-  //-----------------------------------------------------------------------------------
-  template<class t_payload_net_handler>
-  std::set<std::string> node_server<t_payload_net_handler>::get_seed_nodes(epee::net_utils::zone zone)
+  std::set<std::string> node_server<t_payload_net_handler>::get_seed_nodes(epee::net_utils::zone zone) const
   {
     switch (zone)
     {
     case epee::net_utils::zone::public_:
-      return get_dns_seed_nodes();
+      return get_ip_seed_nodes();
     case epee::net_utils::zone::tor:
       if (m_nettype == cryptonote::MAINNET)
       {
@@ -1205,7 +1131,6 @@ namespace nodetool
       public_zone.m_connect = &socks_connect;
       public_zone.m_proxy_address = *endpoint;
       public_zone.m_can_pingback = false;
-      m_enable_dns_seed_nodes &= proxy_dns_leaks_allowed;
       m_enable_dns_blocklist &= proxy_dns_leaks_allowed;
     }
 
@@ -1260,6 +1185,16 @@ namespace nodetool
     m_ssl_support = epee::net_utils::ssl_support_t::e_ssl_support_disabled;
     for (auto& zone : m_network_zones)
     {
+      if (m_exclusive_peers.empty())
+      {
+        const uint16_t default_port = cryptonote::get_config(m_nettype).P2P_DEFAULT_PORT;
+        for (const auto& addr : get_seed_nodes(zone.first))
+        {
+          MDEBUG("Seed node: " << addr);
+          zone.second.m_seed_nodes.push_back(MONERO_UNWRAP(net::get_network_address(addr, default_port)));
+        }
+      }
+
       zone.second.m_net_server.get_config_object().set_handler(this);
       zone.second.m_net_server.get_config_object().m_invoke_timeout = std::chrono::milliseconds{P2P_DEFAULT_INVOKE_TIMEOUT};
 
@@ -1466,18 +1401,15 @@ namespace nodetool
 
     epee::simple_event ev;
     std::atomic<bool> hsh_result(false);
-    bool timeout = false;
 
     bool r = epee::net_utils::async_invoke_remote_command2<typename COMMAND_HANDSHAKE::response>(context_, COMMAND_HANDSHAKE::ID, arg, zone.m_net_server.get_config_object(),
-      [this, &pi, &ev, &hsh_result, &just_take_peerlist, &context_, &timeout](int code, const typename COMMAND_HANDSHAKE::response& rsp, p2p_connection_context& context)
+      [this, &pi, &ev, &hsh_result, &just_take_peerlist, &context_](int code, const typename COMMAND_HANDSHAKE::response& rsp, p2p_connection_context& context)
     {
       const epee::scope_guard scope_exit_handler([&](){ev.raise();});
 
       if(code < 0)
       {
         LOG_WARNING_CC(context, "COMMAND_HANDSHAKE invoke failed. (" << code <<  ", " << epee::levin::get_err_descr(code) << ")");
-        if (code == LEVIN_ERROR_CONNECTION_TIMEDOUT || code == LEVIN_ERROR_CONNECTION_DESTROYED)
-          timeout = true;
         return;
       }
 
@@ -1535,8 +1467,7 @@ namespace nodetool
     if(!hsh_result)
     {
       LOG_WARNING_CC(context_, "COMMAND_HANDSHAKE Failed");
-      if (!timeout)
-        zone.m_net_server.get_config_object().close(context_.m_connection_id, false);
+      zone.m_net_server.get_config_object().close(context_.m_connection_id, false);
     }
     else if (!just_take_peerlist)
     {
@@ -1895,7 +1826,7 @@ namespace nodetool
     MDEBUG("Looking at " << peers_size << " port-deduplicated peers out of " << total_peers_size
       << ", i.e. dropping " << (total_peers_size - peers_size));
 
-    std::set<uint64_t> tried_peers;  // all peers ever tried
+    std::set<epee::net_utils::network_address> tried_addresses;
 
     // Outer try loop, with up to 3 attempts to actually connect to a suitable randomly chosen candidate
     size_t outer_loop_count = 0;
@@ -2018,7 +1949,7 @@ namespace nodetool
         for (const peerlist_entry &peer : candidate_peers) {
           if (filtered.size() >= limit)
             break;
-          if (tried_peers.count(peer.id))
+          if (tried_addresses.count(peer.adr))
             // Already tried, not a possible candidate
             continue;
 
@@ -2069,11 +2000,7 @@ namespace nodetool
 
       // We have our final candidate for this pass of the outer try loop
       const peerlist_entry &candidate = filtered.at(random_index);
-
-      if (tried_peers.count(candidate.id))
-        // Already tried, don't try that one again
-        continue;
-      tried_peers.insert(candidate.id);
+      tried_addresses.insert(candidate.adr);
 
       _note("Considering connecting (out) to " << (use_white_list ? "white" : "gray") << " list peer: " <<
           peerid_to_string(candidate.id) << " " << candidate.adr.str() << ", pruning seed " << epee::string_tools::to_string_hex(candidate.pruning_seed) <<
@@ -2117,76 +2044,33 @@ namespace nodetool
   }
   //-----------------------------------------------------------------------------------
   template<class t_payload_net_handler>
-  bool node_server<t_payload_net_handler>::connect_to_seed(epee::net_utils::zone zone)
+  bool node_server<t_payload_net_handler>::connect_to_seed(const network_zone& zone)
   {
-      network_zone& server = m_network_zones.at(zone);
-      boost::upgrade_lock<boost::shared_mutex> seed_nodes_upgrade_lock(server.m_seed_nodes_lock);
+    const auto& seeds = zone.m_seed_nodes;
+    if (seeds.empty())
+      return true;
 
-      if (!server.m_seed_nodes_initialized)
-      {
-        const std::uint16_t default_port = cryptonote::get_config(m_nettype).P2P_DEFAULT_PORT;
-        boost::upgrade_to_unique_lock<boost::shared_mutex> seed_nodes_lock(seed_nodes_upgrade_lock);
-        server.m_seed_nodes_initialized = true;
-        for (const auto& full_addr : get_seed_nodes(zone))
-        {
-          // seeds should have hostname converted to IP already
-          MDEBUG("Seed node: " << full_addr);
-          server.m_seed_nodes.push_back(MONERO_UNWRAP(net::get_network_address(full_addr, default_port)));
-        }
-        MDEBUG("Number of seed nodes: " << server.m_seed_nodes.size());
-      }
+    bool already_connected = false;
+    size_t index = crypto::rand_idx(seeds.size());
+    for (size_t tried = 0; tried < seeds.size(); ++tried)
+    {
+      if (zone.m_net_server.is_stop_signal_sent())
+        return false;
 
-      if (server.m_seed_nodes.empty() || m_offline || !m_exclusive_peers.empty())
+      peerlist_entry peer{};
+      peer.adr = seeds[index];
+      if (is_peer_used(peer))
+        already_connected = true;
+      else if (!is_addr_recently_failed(peer.adr, P2P_FAILED_SEED_ADDR_FORGET_SECONDS) && try_to_connect_and_handshake_with_new_peer(peer.adr, true))
         return true;
 
-      size_t try_count = 0;
-      bool is_connected_to_at_least_one_seed_node = false;
-      size_t current_index = crypto::rand_idx(server.m_seed_nodes.size());
-      while(true)
-      {
-        if(server.m_net_server.is_stop_signal_sent())
-          return false;
+      if (++index == seeds.size())
+        index = 0;
+    }
 
-        peerlist_entry pe_seed{};
-        pe_seed.adr = server.m_seed_nodes[current_index];
-        if (is_peer_used(pe_seed))
-          is_connected_to_at_least_one_seed_node = true;
-        else if (!is_addr_recently_failed(pe_seed.adr, P2P_FAILED_SEED_ADDR_FORGET_SECONDS) && try_to_connect_and_handshake_with_new_peer(pe_seed.adr, true))
-          break;
-        if(++try_count > server.m_seed_nodes.size())
-        {
-          // only IP zone has fallback (to direct IP) seeds
-          if (zone == epee::net_utils::zone::public_ && !m_fallback_seed_nodes_added.test_and_set())
-          {
-            MWARNING("Failed to connect to any of seed peers, trying fallback seeds");
-            current_index = server.m_seed_nodes.size() - 1;
-            {
-              boost::upgrade_to_unique_lock<boost::shared_mutex> seed_nodes_lock(seed_nodes_upgrade_lock);
-
-              for (const auto &peer: get_ip_seed_nodes())
-              {
-                MDEBUG("Fallback seed node: " << peer);
-                append_net_address(server.m_seed_nodes, peer, cryptonote::get_config(m_nettype).P2P_DEFAULT_PORT);
-              }
-            }
-            if (current_index == server.m_seed_nodes.size() - 1)
-            {
-              MWARNING("No fallback seeds, continuing without seeds");
-              break;
-            }
-            // continue for another few cycles
-          }
-          else
-          {
-            if (!is_connected_to_at_least_one_seed_node)
-              MWARNING("Failed to connect to any of seed peers, continuing without seeds");
-            break;
-          }
-        }
-        if(++current_index >= server.m_seed_nodes.size())
-          current_index = 0;
-      }
-      return true;
+    if (!already_connected)
+      MWARNING("Failed to connect to any of seed peers, continuing without seeds");
+    return true;
   }
   //-----------------------------------------------------------------------------------
   template<class t_payload_net_handler>
@@ -2209,7 +2093,7 @@ namespace nodetool
       }
 
       size_t start_conn_count = get_outgoing_connections_count(zone.second);
-      if(!zone.second.m_peerlist.get_white_peers_count() && !connect_to_seed(zone.first))
+      if(!zone.second.m_peerlist.get_white_peers_count() && !connect_to_seed(zone.second))
       {
         continue;
       }
@@ -2263,7 +2147,7 @@ namespace nodetool
       if (start_conn_count == get_outgoing_connections_count(zone.second) && start_conn_count < zone.second.m_config.m_net_config.max_out_connection_count)
       {
         MINFO("Failed to connect to any, trying seeds");
-        if (!connect_to_seed(zone.first))
+        if (!connect_to_seed(zone.second))
           continue;
       }
       one_succeeded = true;
@@ -2431,7 +2315,14 @@ namespace nodetool
         auto subnet = net::get_ipv4_subnet_address(ip);
         if (subnet)
         {
-          block_subnet(*subnet, DNS_BLOCKLIST_LIFETIME);
+          block_subnet(*subnet, DNS_BLOCKLIST_LIFETIME, true);
+          ++good;
+          continue;
+        }
+        auto ipv6_subnet = net::get_ipv6_subnet_address(ip);
+        if (ipv6_subnet)
+        {
+          block_subnet(*ipv6_subnet, DNS_BLOCKLIST_LIFETIME, true);
           ++good;
           continue;
         }

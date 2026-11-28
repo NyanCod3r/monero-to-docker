@@ -2367,6 +2367,17 @@ namespace cryptonote
         res.bans.push_back(b);
       }
     }
+    std::map<epee::net_utils::ipv6_network_subnet, time_t> blocked_ipv6_subnets = m_p2p.get_blocked_ipv6_subnets();
+    for (std::map<epee::net_utils::ipv6_network_subnet, time_t>::const_iterator i = blocked_ipv6_subnets.begin(); i != blocked_ipv6_subnets.end(); ++i)
+    {
+      if (i->second > now) {
+        COMMAND_RPC_GETBANS::ban b;
+        b.host = i->first.host_str();
+        b.ip = 0;
+        b.seconds = i->second - now;
+        res.bans.push_back(b);
+      }
+    }
 
     res.status = CORE_RPC_STATUS_OK;
     return true;
@@ -2425,6 +2436,15 @@ namespace cryptonote
             m_p2p.block_subnet(*ns_parsed, i->seconds);
           else
             m_p2p.unblock_subnet(*ns_parsed);
+          continue;
+        }
+        auto ipv6_ns_parsed = net::get_ipv6_subnet_address(i->host);
+        if (ipv6_ns_parsed)
+        {
+          if (i->ban)
+            m_p2p.block_subnet(*ipv6_ns_parsed, i->seconds);
+          else
+            m_p2p.unblock_subnet(*ipv6_ns_parsed);
           continue;
         }
       }
@@ -2841,6 +2861,8 @@ namespace cryptonote
 
     const bool restricted = m_restricted && ctx;
 
+    const uint8_t curr_hf_version = m_core.get_blockchain_storage().get_current_hard_fork_version();
+
     bool failed = false;
     res.status = "";
     for (const auto &str: req.txids)
@@ -2857,22 +2879,39 @@ namespace cryptonote
       //TODO: The get_pool_transaction could have an optional meta parameter
       bool broadcasted = false;
       cryptonote::blobdata txblob;
-      if ((broadcasted = m_core.get_pool_transaction(txid, txblob, relay_category::broadcasted)) || (!restricted && m_core.get_pool_transaction(txid, txblob, relay_category::all)))
-      {
-        // The settings below always choose i2p/tor if enabled. Otherwise, do fluff iff previously relayed else dandelion++ stem.
-        NOTIFY_NEW_TRANSACTIONS::request r;
-        r.txs.push_back(std::move(txblob));
-        const auto tx_relay = broadcasted ? relay_method::fluff : relay_method::local;
-        m_core.get_protocol()->relay_transactions(r, boost::uuids::nil_uuid(), epee::net_utils::zone::invalid, tx_relay);
-        //TODO: make sure that tx has reached other nodes here, probably wait to receive reflections from other nodes
-      }
-      else
+      const bool has_tx = (broadcasted = m_core.get_pool_transaction(txid, txblob, relay_category::broadcasted))
+        || (!restricted && m_core.get_pool_transaction(txid, txblob, relay_category::all));
+      if (!has_tx)
       {
         if (!res.status.empty()) res.status += ", ";
         res.status += std::string("transaction not found in pool: ") + str;
         failed = true;
         continue;
       }
+
+      txpool_tx_meta_t meta{};
+      if (!m_core.get_blockchain_storage().get_txpool_tx_meta(txid, meta))
+      {
+        if (!res.status.empty()) res.status += ", ";
+        res.status += std::string("couldn't get metadata for transaction in pool: ") + str;
+        failed = true;
+        continue;
+      }
+
+      if (meta.nic_verified_hf_version != curr_hf_version)
+      {
+        if (!res.status.empty()) res.status += ", ";
+        res.status += std::string("transaction isn't verified for the current HF version: ") + str;
+        failed = true;
+        continue;
+      }
+
+      // The settings below always choose i2p/tor if enabled. Otherwise, do fluff iff previously relayed else dandelion++ stem.
+      NOTIFY_NEW_TRANSACTIONS::request r;
+      r.txs.push_back(std::move(txblob));
+      const auto tx_relay = broadcasted ? relay_method::fluff : relay_method::local;
+      m_core.get_protocol()->relay_transactions(r, boost::uuids::nil_uuid(), epee::net_utils::zone::invalid, tx_relay);
+      //TODO: make sure that tx has reached other nodes here, probably wait to receive reflections from other nodes
     }
 
     if (failed)
